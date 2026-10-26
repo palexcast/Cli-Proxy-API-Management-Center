@@ -53,6 +53,11 @@ export interface AuthFileItem {
    * the API key itself through those fields.
    */
   email?: string;
+  /**
+   * Operator-facing label from the credential file (`label` metadata). The backend
+   * falls back to the email when no explicit label is set.
+   */
+  label?: string;
   /** GCP / Vertex project ID, used when account email is absent. */
   projectId?: string;
   size?: number;

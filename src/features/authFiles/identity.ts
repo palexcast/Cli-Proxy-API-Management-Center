@@ -16,8 +16,9 @@
  */
 
 import type { AuthFileItem } from '@/types';
+import { readExplicitLabel } from '@/utils/authFileLabel';
 
-export type AuthFileIdentityKind = 'email' | 'projectId' | 'fileName';
+export type AuthFileIdentityKind = 'label' | 'email' | 'projectId' | 'fileName';
 
 export type AuthFileIdentity = {
   /** 卡片主行。无任何身份线索时为空串——不伪造占位符。 */
@@ -49,8 +50,16 @@ export const stripJsonExtension = (name: string): string => {
 export const deriveAuthFileIdentity = (file: AuthFileItem): AuthFileIdentity => {
   const fullName = readIdentityText(file.name);
   const base = stripJsonExtension(fullName);
+  const label = readExplicitLabel(file);
   const email = readIdentityText(file.email);
   const projectId = readIdentityText(file.projectId);
+
+  // An explicit label leads; the account email becomes the secondary row so the
+  // card still identifies the account without showing the hashed file name.
+  if (label) {
+    const secondary = email && email.toLowerCase() !== label.toLowerCase() ? email : base || null;
+    return { primary: label, kind: 'label', secondary, fullName };
+  }
 
   const kind: AuthFileIdentityKind = email ? 'email' : projectId ? 'projectId' : 'fileName';
   const primary = email || projectId || base;
