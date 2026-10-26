@@ -275,6 +275,7 @@ const normalizeAuthFileEntry = (
   const statusMessage = readTextField(entry, 'status_message') || declaredStatusMessage;
   const note = readTextField(entry, 'note');
   const email = readTextField(entry, 'email');
+  const label = readTextField(entry, 'label');
   // Never normalize account/account_type: API-key credentials expose secrets there.
   const projectId = readTextField(entry, 'project_id');
   const modified = readDateField(entry);
@@ -307,6 +308,7 @@ const normalizeAuthFileEntry = (
     weight,
     ...(note ? { note } : {}),
     ...(email ? { email } : {}),
+    label: label || undefined,
     ...(projectId ? { projectId } : {}),
   };
 };

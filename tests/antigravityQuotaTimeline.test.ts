@@ -92,9 +92,13 @@ describe('Antigravity grouped timeline', () => {
     for (const initialMode of ['weekly', 'session'] as const) {
       const markup = renderToStaticMarkup(
         createElement(QuotaTimeline, {
-          entries: [{ type: 'antigravity', file: { name: 'account.json', type: 'antigravity' } }],
+          entries: [
+            {
+              type: 'antigravity',
+              file: { name: 'account.json', type: 'antigravity', label: accountName },
+            },
+          ],
           quotaFor: () => quota,
-          displayNameFor: () => accountName,
           resolvedTheme: 'light',
           now,
           initialMode,

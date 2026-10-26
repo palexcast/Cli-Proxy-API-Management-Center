@@ -1,4 +1,5 @@
 import type { AuthFileItem } from '@/types';
+import { readExplicitLabel } from '@/utils/authFileLabel';
 import { normalizeRecentRequestAuthIndex } from '@/utils/recentRequests';
 import { isDevinFile, isPluginQuotaFile } from './validators';
 
@@ -14,11 +15,15 @@ export function getQuotaCacheKey(file: AuthFileItem): string {
   return `${file.name}${QUOTA_IDENTITY_SEPARATOR}${authIndex ?? ''}`;
 }
 
-/** Disambiguate same-name cards without ever falling back to account (a secret). */
+/**
+ * Disambiguate same-name cards without ever falling back to account (a secret).
+ * An explicit operator label replaces the file name when present.
+ */
 export function getQuotaDisplayName(file: AuthFileItem): string {
-  if (!isDevinFile(file) && !isPluginQuotaFile(file)) return file.name;
+  const name = readExplicitLabel(file) || file.name;
+  if (!isDevinFile(file) && !isPluginQuotaFile(file)) return name;
   const identity = file.email?.trim() || normalizeRecentRequestAuthIndex(file.authIndex);
-  return identity ? `${file.name} · ${identity}` : file.name;
+  return identity ? `${name} · ${identity}` : name;
 }
 
 /** Resolve a cache identity back to the physical filename used by file mutations. */
