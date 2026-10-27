@@ -56,6 +56,9 @@ const render = (state: ClaudeQuotaState) =>
       createElement(ClaudeQuotaBody, { quota: state, classes })
     )
   );
+// Without observedAt, so the card's "refreshed at" line stays out of the
+// assertions that a row carries no quotaMeta.
+const renderUndated = (state: ClaudeQuotaState) => render({ ...state, observedAt: undefined });
 
 describe('Claude OAuth usage API normalization', () => {
   test('preserves every extra-usage field and discovers independent dollar balances', () => {
@@ -462,7 +465,7 @@ describe('Claude usage snapshot rendering and retention', () => {
   ] as const)(
     'keeps extra-usage state %s beside its label without utilization',
     (isEnabled, label) => {
-      const markup = render({
+      const markup = renderUndated({
         ...quota,
         dollarWindows: [],
         extraUsage: { ...snapshot.extraUsage!, isEnabled, utilization: null },
@@ -535,7 +538,7 @@ describe('Claude usage snapshot rendering and retention', () => {
   test.each([null, 'user_disabled'])(
     'does not repeat an off state when the user-disabled reason is %s',
     (disabledReason) => {
-      const markup = render({
+      const markup = renderUndated({
         ...quota,
         dollarWindows: [],
         extraUsage: {
@@ -554,7 +557,7 @@ describe('Claude usage snapshot rendering and retention', () => {
   test.each([true, false, null])(
     'renders user-disabled only beside the label when the enabled flag is %s',
     (isEnabled) => {
-      const markup = render({
+      const markup = renderUndated({
         ...quota,
         dollarWindows: [],
         extraUsage: {
@@ -575,7 +578,7 @@ describe('Claude usage snapshot rendering and retention', () => {
   test.each([true, null])(
     'moves a user_disabled reason code into the sole status when the enabled flag is %s',
     (isEnabled) => {
-      const markup = render({
+      const markup = renderUndated({
         ...quota,
         dollarWindows: [],
         extraUsage: {
