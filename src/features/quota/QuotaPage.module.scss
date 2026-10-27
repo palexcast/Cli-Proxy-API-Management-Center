@@ -119,6 +119,11 @@
   }
 }
 
+/* Pushes itself and the sort control to the end of the toolbar row. */
+.autoRefresh {
+  margin-left: auto;
+}
+
 .sort {
   flex: 0 0 auto;
   min-width: 148px;

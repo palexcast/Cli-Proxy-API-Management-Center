@@ -55,6 +55,10 @@ export function QuotaCard(props: QuotaCardProps) {
   const file = entry.file;
   const retainedClaudeUsage =
     entry.type === 'claude' && hasClaudeUsageData(quota as ClaudeQuotaState | undefined);
+  // The reset-grant read goes to Anthropic's usage endpoint; a snapshot pre-fill must
+  // not trigger it on every page open. A manual refresh turns it back on.
+  const claudeSnapshot =
+    entry.type === 'claude' && Boolean((quota as ClaudeQuotaState | undefined)?.snapshotSource);
   const displayName = getQuotaDisplayName(file);
 
   // Capture the entrance delay only at mount, without a render-time ref read.
@@ -68,7 +72,7 @@ export function QuotaCard(props: QuotaCardProps) {
   const loading = status === 'loading';
   const claudeReset = useClaudeResetGrants(
     file,
-    entry.type === 'claude' && status !== 'idle',
+    entry.type === 'claude' && status !== 'idle' && !claudeSnapshot,
     !canRefresh || loading || resetting,
     quota,
     onRefresh
@@ -87,7 +91,7 @@ export function QuotaCard(props: QuotaCardProps) {
     quota?.error || t('common.unknown_error')
   );
   // Claude banked resets join the plan chip row; their expiry list follows it.
-  const showClaudeReset = entry.type === 'claude' && status === 'success';
+  const showClaudeReset = entry.type === 'claude' && status === 'success' && !claudeSnapshot;
   const claudePlanItems = showClaudeReset ? (
     <span className={quotaClasses.codexPlanItem}>
       <span className={quotaClasses.codexPlanLabel}>{t('claude_reset.remaining')}</span>
