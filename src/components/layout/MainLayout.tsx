@@ -29,6 +29,7 @@ import {
   IconSidebarQuota,
   IconSidebarRouting,
   IconSidebarSystem,
+  IconSidebarUsageHistory,
   IconChevronDown,
 } from '@/components/ui/icons';
 import { INLINE_LOGO_JPEG } from '@/assets/logoInline';
@@ -62,6 +63,7 @@ const sidebarIcons: Record<string, ReactNode> = {
   oauth: <IconSidebarOauth size={18} />,
   quota: <IconSidebarQuota size={18} />,
   routing: <IconSidebarRouting size={18} />,
+  usageHistory: <IconSidebarUsageHistory size={18} />,
   plugins: <IconSidebarPlugins size={18} />,
   config: <IconSidebarConfig size={18} />,
   logs: <IconSidebarLogs size={18} />,
@@ -653,6 +655,12 @@ export function MainLayout() {
           labelKey: 'nav.quota_management',
           metaKey: 'nav_meta.quota_management',
           icon: sidebarIcons.quota,
+        },
+        {
+          path: '/usage-history',
+          labelKey: 'nav.usage_history',
+          metaKey: 'nav_meta.usage_history',
+          icon: sidebarIcons.usageHistory,
         },
         {
           path: '/logs',
