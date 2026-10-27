@@ -12,6 +12,7 @@ import { QuotaMeter } from '../../components/QuotaMeter';
 import { QuotaResetLabel } from '../../components/QuotaResetLabel';
 import { collectQuotaRowInstants, pickUrgentRowId } from '../../resetSchedule';
 import type { QuotaBodyProps } from '../../types';
+import { describeClaudeObservation } from './snapshot';
 
 export function ClaudeQuotaBody({
   quota,
@@ -29,6 +30,7 @@ export function ClaudeQuotaBody({
   const extraUsage = quota.extraUsage ?? null;
   const planType = quota.planType ?? null;
   const language = i18n.resolvedLanguage;
+  const observation = describeClaudeObservation(quota, now, t);
   const formatMoney = (value: number | null, currency = 'USD', divisor = 1): string => {
     if (value === null) return '--';
     try {
@@ -53,11 +55,18 @@ export function ClaudeQuotaBody({
 
   return (
     <>
-      {quota.stale && (
+      {quota.stale && !quota.snapshotSource && (
         <div role="status" className={classes.codexResetCreditsError}>
           {t('claude_quota.stale_snapshot', {
             time: quota.observedAt ? new Date(quota.observedAt).toLocaleString(language) : '--',
           })}
+        </div>
+      )}
+      {observation && (
+        <div className={classes.quotaMeta} title={observation.title}>
+          <span className={observation.stale ? classes.quotaResetRelativeSoon : classes.quotaReset}>
+            {observation.text}
+          </span>
         </div>
       )}
       {(planType || planItems) && (

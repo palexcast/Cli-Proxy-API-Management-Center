@@ -217,6 +217,11 @@ export interface ClaudeQuotaState {
   dollarWindows?: ClaudeDollarWindow[];
   observedAt?: string | null;
   stale?: boolean;
+  /**
+   * Set when the state was pre-filled from the proxy's quota snapshot rather than
+   * fetched in this session: which source the newest reading came from.
+   */
+  snapshotSource?: 'headers' | 'usage';
   planType?: string | null;
   error?: string;
   errorStatus?: number;

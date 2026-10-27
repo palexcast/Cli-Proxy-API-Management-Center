@@ -50,6 +50,13 @@ import type { QuotaProviderType } from './providers/types';
 import { useDevinQuotaAutoLoad } from './providers/devin/useDevinQuotaAutoLoad';
 import { useQuotaActions } from './hooks/useQuotaActions';
 import { useQuotaBatchLoader } from './hooks/useQuotaBatchLoader';
+import { useClaudeQuotaSnapshot } from './hooks/useClaudeQuotaSnapshot';
+import {
+  QUOTA_AUTO_REFRESH_OPTIONS,
+  isQuotaAutoRefreshMinutes,
+  readQuotaSettings,
+  writeQuotaSettings,
+} from './settings';
 import { readQuotaUiState, writeQuotaUiState } from './uiState';
 import styles from './QuotaPage.module.scss';
 
@@ -210,6 +217,24 @@ export function QuotaPage() {
     [t]
   );
 
+  const [autoRefreshMinutes, setAutoRefreshMinutes] = useState(
+    () => readQuotaSettings().autoRefreshMinutes
+  );
+  const handleAutoRefreshChange = useCallback((next: string) => {
+    const minutes = Number(next);
+    if (!isQuotaAutoRefreshMinutes(minutes)) return;
+    setAutoRefreshMinutes(minutes);
+    writeQuotaSettings({ autoRefreshMinutes: minutes });
+  }, []);
+  const autoRefreshOptions = useMemo(
+    () =>
+      QUOTA_AUTO_REFRESH_OPTIONS.map((minutes) => ({
+        value: String(minutes),
+        label: t(`quota_management.auto_refresh_${minutes}`),
+      })),
+    [t]
+  );
+
   const { loadedCount, attentionCount } = useMemo(() => {
     let loaded = 0;
     let attention = 0;
@@ -247,6 +272,15 @@ export function QuotaPage() {
   const { batchLoading, loadQuota } = useQuotaBatchLoader();
   const { resettingQuotaName, refreshQuota, resetQuota } = useQuotaActions(disableControls);
 
+  // Claude cards start from the proxy's last known quota instead of empty.
+  const { reloadSnapshot } = useClaudeQuotaSnapshot(
+    entries,
+    !disableControls && !loading && !error && filesGeneration === sessionGeneration,
+    sessionGeneration,
+    autoRefreshMinutes,
+    refreshQuota
+  );
+
   const pendingRefreshRef = useRef<number | null>(null);
   const prevLoadingRef = useRef(loading);
 
@@ -279,9 +313,18 @@ export function QuotaPage() {
         disableControls
       )
     ) {
-      void loadQuota(pageItems);
+      void loadQuota(pageItems).then(reloadSnapshot);
     }
-  }, [disableControls, error, filesGeneration, loading, loadQuota, pageItems, sessionGeneration]);
+  }, [
+    disableControls,
+    error,
+    filesGeneration,
+    loading,
+    loadQuota,
+    pageItems,
+    reloadSnapshot,
+    sessionGeneration,
+  ]);
 
   useDevinQuotaAutoLoad(
     pageItems,
@@ -366,6 +409,15 @@ export function QuotaPage() {
                 <IconX size={14} aria-hidden="true" />
               </button>
             )}
+          </div>
+          <div className={`${styles.sort} ${styles.autoRefresh}`}>
+            <Select
+              value={String(autoRefreshMinutes)}
+              options={autoRefreshOptions}
+              onChange={handleAutoRefreshChange}
+              ariaLabel={t('quota_management.auto_refresh_label')}
+              size="sm"
+            />
           </div>
           <div className={styles.sort}>
             <Select
