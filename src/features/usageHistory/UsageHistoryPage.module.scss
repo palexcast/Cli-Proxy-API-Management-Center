@@ -1,0 +1,182 @@
+@use '../../styles/mixins' as *;
+
+/* Series colors are fixed per account slot (label order), stepped per theme.
+ * Text never takes these colors; they only fill bands, swatches, dots and bars. */
+
+.page {
+  --uh-series-0: #2a78d6;
+  --uh-series-1: #eb6834;
+  --uh-series-2: #1baf7a;
+  --uh-series-3: #eda100;
+  --uh-series-4: #e87ba4;
+  --uh-series-5: #008300;
+  --uh-surface: var(--bg-primary);
+  --uh-band-opacity: 0.38;
+  --uh-band-active-opacity: 0.8;
+  --uh-band-projected-opacity: 0.16;
+  --uh-band-projected-active-opacity: 0.34;
+
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+  min-width: 0;
+}
+
+:global([data-theme='dark']) .page {
+  --uh-series-0: #3987e5;
+  --uh-series-1: #d95926;
+  --uh-series-2: #199e70;
+  --uh-series-3: #c98500;
+  --uh-series-4: #d55181;
+  --uh-series-5: #008300;
+  /* Muted fills sink into the dark surface sooner; lift them a step. */
+  --uh-band-opacity: 0.5;
+  --uh-band-active-opacity: 0.88;
+  --uh-band-projected-opacity: 0.24;
+  --uh-band-projected-active-opacity: 0.42;
+}
+
+/* ---------- header ---------- */
+
+.header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 24px;
+  flex-wrap: wrap;
+}
+
+.copy {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(26px, 3.2vw, 30px);
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+.meta {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-family: $font-mono;
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+
+  &::before {
+    content: '▍';
+    color: var(--viz-success);
+    font-size: 13px;
+    line-height: 1;
+    align-self: center;
+    margin-right: 1px;
+  }
+}
+
+.headerNote {
+  margin: 0;
+  max-width: 80ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.metaDot {
+  color: var(--text-quaternary);
+  user-select: none;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.spinning {
+  animation: spin 0.9s linear infinite;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.notice {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.loading {
+  display: grid;
+  place-items: center;
+  min-height: 240px;
+}
+
+/* ---------- tiles ---------- */
+
+.tiles {
+  display: grid;
+  /* auto-fill keeps the lone runway tile card-sized instead of stretching it. */
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+/* ---------- sections ---------- */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: clamp(16px, 2.2vw, 24px);
+  border-radius: 16px;
+  border: 1px solid var(--border-color);
+  background: var(--uh-surface);
+  min-width: 0;
+}
+
+.panelHead {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.panelTitle {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.panelDescription {
+  margin: 0;
+  max-width: 80ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
