@@ -6,6 +6,8 @@ import type { QuotaHistorySample } from '@/services/api/quotaHistory';
 import {
   buildTimeGrid,
   capacityLeftSeries,
+  isActive,
+  knownUntil,
   type AccountInfo,
   type QuotaWindow,
   type WindowKind,
@@ -111,7 +113,9 @@ function withInstants(grid: number[], instants: number[], start: number, end: nu
  * optionally followed by a projected tail. With a pool the tail is the pooled
  * simulation; without one each account drains at its own rate, refills to 100% at
  * its known reset and keeps draining at the same rate. Before an account's first
- * reading its values are null, and an account with no reading has no tail.
+ * reading its values are null, and an account with no reading has no tail. An account
+ * that left the pool (disabled or removed) keeps its history up to `knownUntil`, then
+ * reads null: it has no tail and never refills.
  */
 export function buildCapacityChart(input: CapacityChartInput): ChartData {
   const { accounts, samples, windows, kind, from, to, points, tail } = input;
@@ -134,7 +138,16 @@ export function buildCapacityChart(input: CapacityChartInput): ChartData {
 
   const resetTicks: ResetTick[] = [];
   const series = accounts.map((account, seriesIndex) => {
-    const values = capacityLeftSeries(samples.get(account.authId) ?? [], kind, past);
+    const own = samples.get(account.authId) ?? [];
+    const values = capacityLeftSeries(own, kind, past);
+    if (!isActive(account)) {
+      const until = knownUntil(own, kind);
+      const known = values.map((value, index) =>
+        until !== null && past[index] < until ? value : null
+      );
+      known.push(...tailTimes.map(() => null));
+      return { account, values: known, weight: input.weightOf?.(account) ?? 1 };
+    }
     const projection = tail?.projections.get(account.authId);
     for (let index = past.length; index < times.length; index += 1) {
       const time = times[index];

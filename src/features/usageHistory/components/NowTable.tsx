@@ -1,7 +1,15 @@
 import { useTranslation } from 'react-i18next';
 import { Select } from '@/components/ui/Select';
 import { formatShare } from '../format';
-import { HOUR_MS, TIERS, isTier, type AccountInfo, type Tier, type WindowKind } from '../model';
+import {
+  HOUR_MS,
+  TIERS,
+  isActive,
+  isTier,
+  type AccountInfo,
+  type Tier,
+  type WindowKind,
+} from '../model';
 import { AccountName } from './Controls';
 import styles from './NowTable.module.scss';
 
@@ -84,7 +92,10 @@ export function NowTable({ rows, now, formatDuration, onTierChange }: NowTablePr
             const cell5Blocked = `${styles.num} ${team && !row.blocked5 ? '' : styles.dim}`;
             const cell7 = `${styles.num} ${team ? styles.dim : ''}`;
             return (
-              <tr key={row.account.authId}>
+              <tr
+                key={row.account.authId}
+                className={isActive(row.account) ? undefined : styles.rowInactive}
+              >
                 <th scope="row">
                   <AccountName account={row.account} />
                 </th>

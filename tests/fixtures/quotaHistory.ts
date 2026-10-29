@@ -183,6 +183,7 @@ export const quotaHistoryResponse = {
     name: account.name,
     label: account.label,
     provider: 'claude',
+    disabled: false,
   })),
   samples: buildSamples(),
   truncated: false,

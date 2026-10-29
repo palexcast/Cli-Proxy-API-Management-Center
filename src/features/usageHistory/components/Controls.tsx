@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import type { AccountInfo } from '../model';
+import { isActive, type AccountInfo } from '../model';
 import { seriesColor } from '../format';
 import styles from './Controls.module.scss';
 
@@ -42,6 +42,16 @@ export function PlanTag({ account }: { account: AccountInfo }) {
   return <span className={styles.tag}>{t(`usage_history.tier_${account.tier}`)}</span>;
 }
 
+/** Why the account is out of the pool: switched off, or no longer loaded. */
+export function StatusTag({ account }: { account: AccountInfo }) {
+  const { t } = useTranslation();
+  return (
+    <span className={`${styles.tag} ${styles.tagStatus}`}>
+      {t(`usage_history.status_${account.status}`)}
+    </span>
+  );
+}
+
 export function AccountName({ account }: { account: AccountInfo }) {
   return (
     <span className={styles.accountName}>
@@ -52,6 +62,7 @@ export function AccountName({ account }: { account: AccountInfo }) {
       />
       <span className={styles.accountLabel}>{account.label}</span>
       <PlanTag account={account} />
+      {!isActive(account) && <StatusTag account={account} />}
     </span>
   );
 }
@@ -62,7 +73,10 @@ interface LegendProps {
   showProjected?: boolean;
 }
 
-/** Always-on legend: every account with its plan; out-of-scope accounts are dimmed. */
+/**
+ * Always-on legend: every account with its plan; out-of-scope accounts and accounts out
+ * of the pool are dimmed.
+ */
 export function ChartLegend({ accounts, activeIds, showProjected = false }: LegendProps) {
   const { t } = useTranslation();
   return (
@@ -70,7 +84,9 @@ export function ChartLegend({ accounts, activeIds, showProjected = false }: Lege
       {accounts.map((account) => (
         <li
           key={account.authId}
-          className={activeIds.has(account.authId) ? undefined : styles.legendOff}
+          className={
+            activeIds.has(account.authId) && isActive(account) ? undefined : styles.legendOff
+          }
         >
           <AccountName account={account} />
         </li>
