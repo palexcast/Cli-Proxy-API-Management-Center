@@ -38,6 +38,7 @@ import {
   recordingStart,
   withLead,
   capacity5h,
+  isActive,
   type AccountInfo,
   type QuotaWindow,
   type Tier,
@@ -345,7 +346,11 @@ export function UsageHistoryPage() {
             {t('usage_history.title')}
           </h1>
           <p className={styles.meta} data-reveal>
-            <span>{t('usage_history.meta_accounts', { count: model?.accounts.length ?? 0 })}</span>
+            <span>
+              {t('usage_history.meta_accounts', {
+                count: model?.accounts.filter(isActive).length ?? 0,
+              })}
+            </span>
             {model?.start !== null && model?.start !== undefined && (
               <>
                 <span className={styles.metaDot} aria-hidden="true">

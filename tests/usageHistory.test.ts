@@ -20,6 +20,7 @@ import {
   type AccountInfo,
 } from '../src/features/usageHistory/model';
 import { buildNowRows, buildPools } from '../src/features/usageHistory/pools';
+import { buildCapacityChart } from '../src/features/usageHistory/chartData';
 import { parseTierOverrides } from '../src/features/usageHistory/settings';
 import {
   burnRate,
@@ -73,7 +74,12 @@ describe('normalizeQuotaHistory', () => {
 
   test('drops malformed entries and out-of-range fields from untrusted input', () => {
     const parsed = normalizeQuotaHistory({
-      accounts: [{ auth_id: '' }, 'x', { auth_id: 'a', label: '<b>x</b>', provider: 'Claude' }],
+      accounts: [
+        { auth_id: '' },
+        'x',
+        { auth_id: 'a', label: '<b>x</b>', provider: 'Claude', disabled: 'true' },
+        { auth_id: 'b', provider: 'claude', disabled: true },
+      ],
       samples: [
         { t: 'not a time', auth_id: 'a', u5: 0.1 },
         { t: '2026-10-27T11:00:00Z', auth_id: '' },
@@ -83,7 +89,8 @@ describe('normalizeQuotaHistory', () => {
       truncated: 'yes',
     });
     expect(parsed.accounts).toEqual([
-      { authId: 'a', name: '', label: '<b>x</b>', provider: 'claude' },
+      { authId: 'a', name: '', label: '<b>x</b>', provider: 'claude', disabled: false },
+      { authId: 'b', name: '', label: '', provider: 'claude', disabled: true },
     ]);
     expect(parsed.samples).toEqual([
       { t: at('2026-10-27T10:00:00Z'), authId: 'a', u5: 0.3, r5: 1761580800000, s5: 'allowed' },
@@ -137,6 +144,7 @@ describe('buildAccounts', () => {
         defaultTier: 'max_20x',
         plan: 'max',
         slot: 0,
+        status: 'removed',
       },
       {
         authId: 'x',
@@ -145,6 +153,7 @@ describe('buildAccounts', () => {
         defaultTier: 'max_20x',
         plan: 'team',
         slot: 1,
+        status: 'active',
       },
     ]);
   });
@@ -617,6 +626,7 @@ describe('accountsWithWeeklyReadings', () => {
       defaultTier: 'max_20x',
       plan: 'max',
       slot: 0,
+      status: 'active',
     });
     const samples = new Map<string, QuotaHistorySample[]>([
       ['max', [{ t: NOW, authId: 'max', u5: 0.2, r5: NOW + HOUR_MS, u7: 0, r7: NOW + DAY_MS }]],
@@ -641,6 +651,7 @@ describe('buildNowRows', () => {
     defaultTier: 'team_premium',
     plan: 'team',
     slot: 0,
+    status: 'active',
   });
   const rows = (blockedUntil: number) => {
     const accounts = [account('a'), account('w')];
@@ -876,5 +887,117 @@ describe('history request contract', () => {
     );
     expect(hook).toContain('quotaHistoryApi.get({ since: fetchSince, step })');
     expect(hook).not.toContain('until:');
+  });
+});
+
+describe('accounts out of the pool', () => {
+  const FIVE_H = 5 * HOUR_MS;
+  const account = (authId: string, status: AccountInfo['status']): AccountInfo => ({
+    authId,
+    label: authId,
+    tier: 'max_20x',
+    defaultTier: 'max_20x',
+    plan: 'max',
+    slot: 0,
+    status,
+  });
+
+  test('buildAccounts reads disabled from the payload and removed from samples only', () => {
+    const accounts = buildAccounts({
+      accounts: [
+        { authId: 'on', name: 'on.json', label: 'On', provider: 'claude', disabled: false },
+        { authId: 'off', name: 'off.json', label: 'Off', provider: 'claude', disabled: true },
+      ],
+      samples: [{ t: 1, authId: 'gone' }],
+    });
+    expect(accounts.map((entry) => [entry.authId, entry.status])).toEqual([
+      ['gone', 'removed'],
+      ['off', 'disabled'],
+      ['on', 'active'],
+    ]);
+  });
+
+  test('pools leave a disabled account out; its row keeps only the last leftover', () => {
+    const accounts = [account('on', 'active'), account('off', 'disabled')];
+    const projections5 = new Map<string, AccountProjection>([
+      ['on', projection('on', 1, 0.5, null)],
+      ['off', projection('off', 1, 0, null)],
+    ]);
+    const pools = buildPools(accounts, projections5, 'all', NOW, FIVE_H);
+    for (const pool of [pools.max, pools.chart]) {
+      expect(pool.values.has('on')).toBe(true);
+      expect(pool.values.has('off')).toBe(false);
+    }
+    // 'on' alone drains at 0.5/h: dry in 2h, which 'off' would otherwise have stretched.
+    expect(pools.max.emptyAt).toBeCloseTo(NOW + 2 * HOUR_MS, -3);
+    const windows7 = new Map([
+      [
+        'off',
+        [
+          {
+            authId: 'off',
+            kind: '7d' as const,
+            start: NOW - 8 * DAY_MS,
+            reset: NOW - DAY_MS,
+            finalUtilization: 0.7,
+            lastSampleAt: NOW - DAY_MS - HOUR_MS,
+          },
+        ],
+      ],
+    ]);
+    const [, off] = buildNowRows({
+      accounts,
+      projections5,
+      projections7: new Map([['off', projection('off', 0.3, 0, NOW + DAY_MS)]]),
+      windows5: new Map(),
+      windows7,
+      pools,
+      now: NOW,
+    });
+    expect(off).toEqual({
+      account: accounts[1],
+      used5: null,
+      reset5: null,
+      emptyIn5: null,
+      blocked5: false,
+      used7: null,
+      reset7: null,
+      lastLeftover: expect.closeTo(0.3, 10),
+      nextLeftover: null,
+    });
+  });
+
+  test('the chart keeps history until the last reading resets, then no band and no tail', () => {
+    const samples: QuotaHistorySample[] = [
+      { t: NOW - 2 * HOUR_MS, authId: 'x', u5: 0.4, r5: NOW - HOUR_MS },
+    ];
+    const accounts = [account('on', 'active'), account('off', 'disabled')];
+    const data = buildCapacityChart({
+      accounts,
+      samples: new Map([
+        ['on', samples.map((sample) => ({ ...sample, authId: 'on' }))],
+        ['off', samples.map((sample) => ({ ...sample, authId: 'off' }))],
+      ]),
+      windows: new Map(),
+      kind: '5h',
+      from: NOW - 3 * HOUR_MS,
+      to: NOW,
+      points: 7,
+      tail: {
+        horizonMs: FIVE_H,
+        projections: new Map([
+          ['on', projection('on', 1, 0, null)],
+          ['off', projection('off', 1, 0, null)],
+        ]),
+      },
+    });
+    const [on, off] = data.series.map((entry) => entry.values);
+    const split = data.splitIndex ?? 0;
+    // Grid every 30 minutes from NOW-3h: the reading counts from NOW-2h until its NOW-1h reset.
+    expect(on.slice(0, split + 1)).toEqual([null, null, 0.6, 0.6, 1, 1, 1]);
+    expect(off.slice(0, split + 1)).toEqual([null, null, 0.6, 0.6, null, null, null]);
+    expect(off.slice(split + 1).every((value) => value === null)).toBe(true);
+    expect(on.slice(split + 1).every((value) => value !== null)).toBe(true);
+    expect(data.resetTicks.some((tick) => tick.series === 1)).toBe(false);
   });
 });

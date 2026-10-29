@@ -39,3 +39,7 @@
 .table .dim {
   color: var(--text-tertiary);
 }
+
+.table .rowInactive > * {
+  opacity: 0.55;
+}

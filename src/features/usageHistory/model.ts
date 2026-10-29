@@ -55,6 +55,12 @@ const RESET_TOLERANCE_MS = MINUTE_MS;
 
 export const SERIES_SLOT_COUNT = 6;
 
+/**
+ * Whether the proxy can route to the account: `disabled` is loaded but switched off,
+ * `removed` appears only in past samples. Only active accounts are pooled or projected.
+ */
+export type AccountStatus = 'active' | 'disabled' | 'removed';
+
 export interface AccountInfo {
   authId: string;
   /** Display text: explicit label, else file name, else the auth id. */
@@ -65,7 +71,11 @@ export interface AccountInfo {
   plan: Plan;
   /** Position in label order; picks the fixed series color. */
   slot: number;
+  status: AccountStatus;
 }
+
+export const isActive = (account: Pick<AccountInfo, 'status'>): boolean =>
+  account.status === 'active';
 
 export type TierOverrides = Record<string, Tier>;
 
@@ -105,7 +115,8 @@ export const capacity5h = (account: Pick<AccountInfo, 'tier'>): number =>
 
 /**
  * Every account that is either loaded now or present in the samples, in label
- * order. Historical ids with no `accounts` entry fall back to their id.
+ * order. Historical ids with no `accounts` entry fall back to their id and read as
+ * removed.
  */
 export function buildAccounts(
   history: Pick<QuotaHistory, 'accounts' | 'samples'>,
@@ -124,7 +135,8 @@ export function buildAccounts(
     const label = explicit || account?.name || authId;
     const defaultTier = defaultTierForLabel(explicit);
     const tier = overrides[authId] ?? defaultTier;
-    return { authId, label, tier, defaultTier, plan: TIER_PLAN[tier] };
+    const status: AccountStatus = !account ? 'removed' : account.disabled ? 'disabled' : 'active';
+    return { authId, label, tier, defaultTier, plan: TIER_PLAN[tier], status };
   });
 
   rows.sort((a, b) => a.label.localeCompare(b.label) || a.authId.localeCompare(b.authId));
@@ -289,6 +301,19 @@ export function capacityLeftAt(
 ): number | null {
   const blockEnd = kind === '5h' ? weeklyBlockAt(samples, time) : null;
   return effectiveLeft(latestReading(samples, kind, time), kind, blockEnd, time);
+}
+
+/**
+ * The last instant an account's `kind` reading still describes: the reset of its newest
+ * reading, or that sample's time if later. Past it, an account that left the pool has
+ * no capacity to carry forward. Null with no reading.
+ */
+export function knownUntil(samples: QuotaHistorySample[], kind: WindowKind): number | null {
+  for (let index = samples.length - 1; index >= 0; index -= 1) {
+    const reading = readWindow(samples[index], kind);
+    if (reading) return Math.max(reading.r, samples[index].t);
+  }
+  return null;
 }
 
 /** Capacity left on an ascending time grid, in one pass over the samples. */

@@ -112,6 +112,7 @@ function pooledChart(list: AccountProjection[]) {
     defaultTier: 'team_premium' as const,
     plan: 'team' as const,
     slot,
+    status: 'active' as const,
   }));
   const data = buildCapacityChart({
     accounts: chartAccounts,
@@ -307,6 +308,7 @@ describe('usage history chart data', () => {
       defaultTier: 'max_20x' as const,
       plan: 'max' as const,
       slot: 0,
+      status: 'active',
     };
     const data = buildCapacityChart({
       accounts: [account],
@@ -507,8 +509,17 @@ describe('usage history stacked chart weights', () => {
       defaultTier: 'team_premium',
       plan: 'team',
       slot: 0,
+      status: 'active',
     },
-    { authId: 'm', label: 'm max', tier: 'max_20x', defaultTier: 'max_20x', plan: 'max', slot: 1 },
+    {
+      authId: 'm',
+      label: 'm max',
+      tier: 'max_20x',
+      defaultTier: 'max_20x',
+      plan: 'max',
+      slot: 1,
+      status: 'active',
+    },
   ];
   const projections5 = new Map(
     [handMade('a', 0.2, 0, null), handMade('m', 0.9, 0, null)].map((entry) => [entry.authId, entry])
@@ -562,6 +573,7 @@ describe('usage history stacked chart weights', () => {
       defaultTier: 'max_20x',
       plan: 'max',
       slot: 2,
+      status: 'active',
     };
     const data = buildCapacityChart({
       accounts: [...list, unseen],
@@ -601,6 +613,7 @@ describe('usage history right-now rows', () => {
       defaultTier: 'team_premium',
       plan: 'team',
       slot: 0,
+      status: 'active',
     },
     {
       authId: 'b',
@@ -609,8 +622,17 @@ describe('usage history right-now rows', () => {
       defaultTier: 'team_premium',
       plan: 'team',
       slot: 1,
+      status: 'active',
     },
-    { authId: 'm', label: 'm max', tier: 'max_20x', defaultTier: 'max_20x', plan: 'max', slot: 2 },
+    {
+      authId: 'm',
+      label: 'm max',
+      tier: 'max_20x',
+      defaultTier: 'max_20x',
+      plan: 'max',
+      slot: 2,
+      status: 'active',
+    },
   ];
   const projections5 = new Map(
     [
@@ -683,6 +705,7 @@ describe('usage history no-data gaps and weekly blocks', () => {
       defaultTier: 'team_premium',
       plan: 'team',
       slot: 0,
+      status: 'active',
     },
     {
       authId: 'n',
@@ -691,6 +714,7 @@ describe('usage history no-data gaps and weekly blocks', () => {
       defaultTier: 'team_premium',
       plan: 'team',
       slot: 1,
+      status: 'active',
     },
     {
       authId: 'z',
@@ -699,6 +723,7 @@ describe('usage history no-data gaps and weekly blocks', () => {
       defaultTier: 'team_premium',
       plan: 'team',
       slot: 2,
+      status: 'active',
     },
     {
       authId: 'w',
@@ -707,6 +732,7 @@ describe('usage history no-data gaps and weekly blocks', () => {
       defaultTier: 'team_premium',
       plan: 'team',
       slot: 3,
+      status: 'active',
     },
   ];
   // 'a' is seen throughout, 'n' from two hours ago, 'z' never; 'w' is weekly-exhausted
@@ -920,5 +946,40 @@ describe('usage history translations', () => {
       expect(Object.keys(messages).filter((key) => /waste|idle5|active_/.test(key))).toEqual([]);
       expect(Object.values(messages).join(' ')).not.toMatch(/\bwaste/i);
     });
+  });
+});
+
+describe('usage history accounts out of the pool', () => {
+  test('a disabled account is tagged in the table', () => {
+    const off: AccountInfo = {
+      authId: 'off',
+      label: 'Off max',
+      tier: 'max_20x',
+      defaultTier: 'max_20x',
+      plan: 'max',
+      slot: 0,
+      status: 'disabled',
+    };
+    const table = renderToStaticMarkup(
+      createElement(NowTable, {
+        rows: [
+          {
+            account: off,
+            used5: null,
+            reset5: null,
+            emptyIn5: null,
+            blocked5: false,
+            used7: null,
+            reset7: null,
+            lastLeftover: 0.3,
+            nextLeftover: null,
+          },
+        ],
+        now: NOW,
+        formatDuration: () => '',
+        onTierChange: () => {},
+      })
+    );
+    expect(table).toContain('>Disabled</span>');
   });
 });

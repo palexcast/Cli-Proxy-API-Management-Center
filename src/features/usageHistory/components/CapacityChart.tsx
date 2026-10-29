@@ -2,6 +2,7 @@ import { useId, useMemo, useState, type KeyboardEvent, type PointerEvent } from 
 import { useTranslation } from 'react-i18next';
 import type { ChartData } from '../chartData';
 import { formatShare, seriesColor } from '../format';
+import { isActive } from '../model';
 import styles from './CapacityChart.module.scss';
 
 const VIEW_WIDTH = 1000;
@@ -116,6 +117,8 @@ interface CanvasProps {
   /** Each band's height at 100%, as a share of the plot. */
   shares: number[];
   slots: number[];
+  /** Per band: the account left the pool, drawn greyed out. */
+  muted: boolean[];
   splitIndex?: number;
   dots: ChartData['dots'];
   activeIndex: number | null;
@@ -135,6 +138,7 @@ function Canvas({
   bases,
   shares,
   slots,
+  muted,
   splitIndex,
   dots,
   activeIndex,
@@ -187,7 +191,9 @@ function Canvas({
       >
         {tops.map((top, index) => {
           const fill = seriesColor(slots[index]);
-          const band = `${styles.band} ${index === activeSeries ? styles.bandActive : ''}`;
+          const band = `${styles.band} ${index === activeSeries ? styles.bandActive : ''} ${
+            muted[index] ? styles.bandMuted : ''
+          }`;
           const observed = bandPath(positions, top, bases[index], 0, split, y);
           const projected =
             split < last ? bandPath(positions, top, bases[index], split, last, y) : '';
@@ -305,6 +311,7 @@ export function CapacityChart({
   const activeIndex =
     storedIndex === null || count === 0 ? null : Math.max(0, Math.min(storedIndex, count - 1));
   const slots = useMemo(() => series.map((entry) => entry.account.slot), [series]);
+  const muted = useMemo(() => series.map((entry) => !isActive(entry.account)), [series]);
 
   // Each band's height is its share of the total weight of the accounts with data, so
   // the stack reads as the share of the whole pool left; one never seen takes no room. A
@@ -460,6 +467,7 @@ export function CapacityChart({
               bases={stacked.bases}
               shares={stacked.shares}
               slots={slots}
+              muted={muted}
               dots={dots}
               resetTicks={resetTicks}
             />
@@ -488,6 +496,7 @@ export function CapacityChart({
                   bases={[new Array<number>(count).fill(0)]}
                   shares={[1]}
                   slots={[entry.account.slot]}
+                  muted={[muted[index]]}
                   dots={dots
                     .filter((dot) => dot.series === index)
                     .map((dot) => ({ ...dot, series: 0 }))}

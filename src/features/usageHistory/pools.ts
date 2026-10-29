@@ -5,12 +5,19 @@
  * The table and the runway tile read the plan pools (Team accounts with each other,
  * Max accounts with each other), so a row's "Empty in" never changes with the chart's
  * scope. Only the 5h chart, and its runway marker, follow the scope. Every pool weighs
- * its accounts by their tier's 5h capacity. An account with no reading yet is in no pool
- * and reads as a dash.
+ * its accounts by their tier's 5h capacity. An account with no reading yet, or one the
+ * proxy no longer routes to (disabled or removed), is in no pool and reads as a dash.
  */
 
 import type { NowRow } from './components/NowTable';
-import { HOUR_MS, capacity5h, lastLeftover, type AccountInfo, type QuotaWindow } from './model';
+import {
+  HOUR_MS,
+  capacity5h,
+  isActive,
+  lastLeftover,
+  type AccountInfo,
+  type QuotaWindow,
+} from './model';
 import {
   poolValueBefore,
   simulatePool,
@@ -30,12 +37,13 @@ export interface Pools {
 }
 
 export function buildPools(
-  accounts: AccountInfo[],
+  all: AccountInfo[],
   projections5: Map<string, AccountProjection>,
   scope: TeamScope,
   now: number,
   horizonMs: number
 ): Pools {
+  const accounts = all.filter(isActive);
   const size = new Map(accounts.map((account) => [account.authId, capacity5h(account)]));
   const simulate = (list: AccountInfo[]) =>
     simulatePool(
@@ -61,7 +69,11 @@ export interface NowRowInput {
   now: number;
 }
 
-/** One row per account; "Empty in" and the 5h leftover come from the account's plan pool. */
+/**
+ * One row per account; "Empty in" and the 5h leftover come from the account's plan pool.
+ * An account out of the pool keeps only its last leftover: its live figures would carry
+ * a stale reading forward as if it still served requests.
+ */
 export function buildNowRows({
   accounts,
   projections5,
@@ -76,6 +88,19 @@ export function buildNowRows({
     const p7 = projections7.get(account.authId);
     const isTeam = account.plan === 'team';
     const planWindows = (isTeam ? windows5 : windows7).get(account.authId) ?? [];
+    if (!isActive(account)) {
+      return {
+        account,
+        used5: null,
+        reset5: null,
+        emptyIn5: null,
+        blocked5: false,
+        used7: null,
+        reset7: null,
+        lastLeftover: lastLeftover(planWindows, now),
+        nextLeftover: null,
+      };
+    }
     const pool = isTeam ? pools.team : pools.max;
     const pooled = pool.values.has(account.authId);
     const emptyAt = pooled ? (pool.accountEmptyAt.get(account.authId) ?? null) : null;

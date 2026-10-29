@@ -9,6 +9,8 @@ export interface QuotaHistoryAccount {
   name: string;
   label: string;
   provider: string;
+  /** Switched off by the operator: still loaded, takes no requests. */
+  disabled: boolean;
 }
 
 /**
@@ -81,6 +83,7 @@ const normalizeAccount = (value: unknown): QuotaHistoryAccount | null => {
     name: readText(value.name),
     label: readText(value.label),
     provider: readText(value.provider).toLowerCase(),
+    disabled: value.disabled === true,
   };
 };
 
