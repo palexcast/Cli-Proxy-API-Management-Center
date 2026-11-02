@@ -113,6 +113,7 @@ function pooledChart(list: AccountProjection[]) {
     plan: 'team' as const,
     slot,
     status: 'active' as const,
+    fiveHourLimit: true,
   }));
   const data = buildCapacityChart({
     accounts: chartAccounts,
@@ -309,6 +310,7 @@ describe('usage history chart data', () => {
       plan: 'max' as const,
       slot: 0,
       status: 'active',
+      fiveHourLimit: true,
     };
     const data = buildCapacityChart({
       accounts: [account],
@@ -510,6 +512,7 @@ describe('usage history stacked chart weights', () => {
       plan: 'team',
       slot: 0,
       status: 'active',
+      fiveHourLimit: true,
     },
     {
       authId: 'm',
@@ -519,6 +522,7 @@ describe('usage history stacked chart weights', () => {
       plan: 'max',
       slot: 1,
       status: 'active',
+      fiveHourLimit: true,
     },
   ];
   const projections5 = new Map(
@@ -574,6 +578,7 @@ describe('usage history stacked chart weights', () => {
       plan: 'max',
       slot: 2,
       status: 'active',
+      fiveHourLimit: true,
     };
     const data = buildCapacityChart({
       accounts: [...list, unseen],
@@ -614,6 +619,7 @@ describe('usage history right-now rows', () => {
       plan: 'team',
       slot: 0,
       status: 'active',
+      fiveHourLimit: true,
     },
     {
       authId: 'b',
@@ -623,6 +629,7 @@ describe('usage history right-now rows', () => {
       plan: 'team',
       slot: 1,
       status: 'active',
+      fiveHourLimit: true,
     },
     {
       authId: 'm',
@@ -632,6 +639,7 @@ describe('usage history right-now rows', () => {
       plan: 'max',
       slot: 2,
       status: 'active',
+      fiveHourLimit: true,
     },
   ];
   const projections5 = new Map(
@@ -706,6 +714,7 @@ describe('usage history no-data gaps and weekly blocks', () => {
       plan: 'team',
       slot: 0,
       status: 'active',
+      fiveHourLimit: true,
     },
     {
       authId: 'n',
@@ -715,6 +724,7 @@ describe('usage history no-data gaps and weekly blocks', () => {
       plan: 'team',
       slot: 1,
       status: 'active',
+      fiveHourLimit: true,
     },
     {
       authId: 'z',
@@ -724,6 +734,7 @@ describe('usage history no-data gaps and weekly blocks', () => {
       plan: 'team',
       slot: 2,
       status: 'active',
+      fiveHourLimit: true,
     },
     {
       authId: 'w',
@@ -733,6 +744,7 @@ describe('usage history no-data gaps and weekly blocks', () => {
       plan: 'team',
       slot: 3,
       status: 'active',
+      fiveHourLimit: true,
     },
   ];
   // 'a' is seen throughout, 'n' from two hours ago, 'z' never; 'w' is weekly-exhausted
@@ -959,6 +971,7 @@ describe('usage history accounts out of the pool', () => {
       plan: 'max',
       slot: 0,
       status: 'disabled',
+      fiveHourLimit: true,
     };
     const table = renderToStaticMarkup(
       createElement(NowTable, {

@@ -7,6 +7,10 @@ import {
   buildAccounts,
   buildTimeGrid,
   capacity5h,
+  capacity7d,
+  hasFiveHourLimit,
+  inPool,
+  tierForPlan,
   TIER_CAPACITY_5H,
   buildWindows,
   capacityLeftAt,
@@ -145,6 +149,7 @@ describe('buildAccounts', () => {
         plan: 'max',
         slot: 0,
         status: 'removed',
+        fiveHourLimit: true,
       },
       {
         authId: 'x',
@@ -154,6 +159,7 @@ describe('buildAccounts', () => {
         plan: 'team',
         slot: 1,
         status: 'active',
+        fiveHourLimit: true,
       },
     ]);
   });
@@ -627,6 +633,7 @@ describe('accountsWithWeeklyReadings', () => {
       plan: 'max',
       slot: 0,
       status: 'active',
+      fiveHourLimit: true,
     });
     const samples = new Map<string, QuotaHistorySample[]>([
       ['max', [{ t: NOW, authId: 'max', u5: 0.2, r5: NOW + HOUR_MS, u7: 0, r7: NOW + DAY_MS }]],
@@ -652,6 +659,7 @@ describe('buildNowRows', () => {
     plan: 'team',
     slot: 0,
     status: 'active',
+    fiveHourLimit: true,
   });
   const rows = (blockedUntil: number) => {
     const accounts = [account('a'), account('w')];
@@ -900,6 +908,7 @@ describe('accounts out of the pool', () => {
     plan: 'max',
     slot: 0,
     status,
+    fiveHourLimit: true,
   });
 
   test('buildAccounts reads disabled from the payload and removed from samples only', () => {
@@ -964,6 +973,7 @@ describe('accounts out of the pool', () => {
       reset7: null,
       lastLeftover: expect.closeTo(0.3, 10),
       nextLeftover: null,
+      emptyInWeekly: false,
     });
   });
 
@@ -999,5 +1009,230 @@ describe('accounts out of the pool', () => {
     expect(off.slice(split + 1).every((value) => value === null)).toBe(true);
     expect(on.slice(split + 1).every((value) => value !== null)).toBe(true);
     expect(data.resetTicks.some((tick) => tick.series === 1)).toBe(false);
+  });
+});
+
+describe('plans renamed on 2026-10-30: Max and Ultra', () => {
+  test('a plan picks the tier; a label only when there is none', () => {
+    expect(
+      tierForPlan({ organizationType: 'claude_max', rateLimitTier: 'default_claude_max_20x' })
+    ).toBe('max_20x');
+    expect(
+      tierForPlan({ organizationType: 'claude_max', rateLimitTier: 'default_claude_max_5x' })
+    ).toBe('max_5x');
+    // Live Team Premium seats report the Max tier under their Team organization.
+    expect(
+      tierForPlan({ organizationType: 'claude_team', rateLimitTier: 'default_claude_max_5x' })
+    ).toBe('team_premium');
+    expect(
+      tierForPlan({ organizationType: 'claude_team', rateLimitTier: 'default_claude_ai' })
+    ).toBe('team_standard');
+    expect(tierForPlan({ organizationType: 'claude_team', rateLimitTier: '' })).toBeNull();
+    expect(
+      tierForPlan({ organizationType: 'claude_pro', rateLimitTier: 'default_claude_ai' })
+    ).toBeNull();
+    expect(tierForPlan(undefined)).toBeNull();
+
+    const accounts = buildAccounts(
+      {
+        accounts: [
+          {
+            authId: 'personal',
+            name: 'p.json',
+            label: 'Alex team-ish',
+            provider: 'claude',
+            disabled: false,
+            plan: { organizationType: 'claude_max', rateLimitTier: 'default_claude_max_5x' },
+          },
+          {
+            authId: 'unknown',
+            name: 'u.json',
+            label: 'NT team',
+            provider: 'claude',
+            disabled: false,
+          },
+        ],
+        samples: [],
+      },
+      { personal: 'max_20x' }
+    );
+    const [personal, unknown] = accounts;
+    expect([personal.defaultTier, personal.tier, unknown.defaultTier]).toEqual([
+      'max_5x',
+      'max_20x',
+      'team_premium',
+    ]);
+    expect(accounts.every((account) => account.fiveHourLimit)).toBe(true);
+  });
+
+  test('the history API carries the plan', () => {
+    const history = normalizeQuotaHistory({
+      accounts: [
+        {
+          auth_id: 'a',
+          plan: { organization_type: 'claude_max', rate_limit_tier: 'default_claude_max_20x' },
+        },
+        { auth_id: 'b', plan: { organization_type: ' ', rate_limit_tier: '' } },
+        { auth_id: 'c' },
+      ],
+      samples: [],
+    });
+    expect(history.accounts.map((account) => account.plan)).toEqual([
+      { organizationType: 'claude_max', rateLimitTier: 'default_claude_max_20x' },
+      undefined,
+      undefined,
+    ]);
+  });
+
+  test('weekly weights follow the published multiples of Pro', () => {
+    expect(capacity7d({ tier: 'max_5x' })).toBe(5);
+    expect(capacity7d({ tier: 'max_20x' })).toBe(10);
+    expect(capacity5h({ tier: 'max_5x' })).toBe(5);
+  });
+});
+
+describe('accounts without a 5h limit', () => {
+  // The personal account's own pattern: the 5h window hit 100% on Oct 31, reset at 21:50,
+  // and every response since Nov 1 carried the weekly window only.
+  const reset5 = Date.parse('2026-10-31T21:50:00Z');
+  const reset7 = Date.parse('2026-11-07T14:00:00Z');
+  const ultra: QuotaHistorySample[] = [
+    {
+      t: Date.parse('2026-10-31T20:58:20Z'),
+      authId: 'u',
+      u5: 1,
+      r5: reset5,
+      u7: 0.17,
+      r7: reset7,
+      s5: 'rejected',
+    },
+    {
+      t: Date.parse('2026-10-31T21:08:25Z'),
+      authId: 'u',
+      u5: 1,
+      r5: reset5,
+      u7: 0.17,
+      r7: reset7,
+      s5: 'rejected',
+    },
+    { t: Date.parse('2026-11-01T17:11:22Z'), authId: 'u', u7: 0.17, r7: reset7, s7: 'allowed' },
+    { t: Date.parse('2026-11-02T11:04:56Z'), authId: 'u', u7: 0.28, r7: reset7 },
+  ];
+
+  test('a weekly-only response after the last 5h reset means no 5h window', () => {
+    expect(hasFiveHourLimit(ultra)).toBe(false);
+    // Weekly-only while the 5h window is still open: Anthropic left the 5h headers out.
+    expect(hasFiveHourLimit(ultra.slice(0, 2).concat([{ ...ultra[3], t: reset5 - 60_000 }]))).toBe(
+      true
+    );
+    // An exhausted weekly window says nothing about the 5h one.
+    expect(hasFiveHourLimit(ultra.slice(0, 2).concat([{ ...ultra[3], u7: 1 }]))).toBe(true);
+    expect(hasFiveHourLimit(ultra.slice(0, 2).concat([{ ...ultra[3], s7: 'rejected' }]))).toBe(
+      true
+    );
+    // Weekly readings only, ever: no 5h window.
+    expect(hasFiveHourLimit(ultra.slice(2))).toBe(false);
+    // A later 5h reading brings the window back.
+    const back = Date.parse('2026-11-02T12:00:00Z');
+    expect(
+      hasFiveHourLimit([...ultra, { t: back, authId: 'u', u5: 0.1, r5: back + 4 * HOUR_MS }])
+    ).toBe(true);
+    // Team accounts report 5h only; no samples at all says nothing.
+    expect(hasFiveHourLimit([{ t: NOW, authId: 't', u5: 0.3, r5: NOW + HOUR_MS }])).toBe(true);
+    expect(hasFiveHourLimit([])).toBe(true);
+  });
+
+  test('it leaves the 5h pools, reads Empty in from its weekly window and ends its 5h line', () => {
+    const at = Date.parse('2026-11-02T12:00:00Z');
+    const account = (
+      authId: string,
+      tier: AccountInfo['tier'],
+      fiveHourLimit: boolean
+    ): AccountInfo => ({
+      authId,
+      label: authId,
+      tier,
+      defaultTier: tier,
+      plan: tier.startsWith('team') ? 'team' : 'max',
+      slot: 0,
+      status: 'active',
+      fiveHourLimit,
+    });
+    const accounts = [account('u', 'max_20x', false), account('t', 'team_premium', true)];
+    expect(accounts.map((entry) => [inPool(entry, '5h'), inPool(entry, '7d')])).toEqual([
+      [false, true],
+      [true, true],
+    ]);
+    const atProjection = (
+      authId: string,
+      left: number,
+      rate: number,
+      reset: number
+    ): AccountProjection => ({
+      authId,
+      left,
+      rate,
+      reset,
+      hoursToReset: (reset - at) / HOUR_MS,
+      emptyInHours: rate > 0 ? left / rate : Number.POSITIVE_INFINITY,
+      projectedLeftover: Math.max(0, left - rate * ((reset - at) / HOUR_MS)),
+      blockedUntil: null,
+    });
+    // Its 5h reading reset on Oct 31, so the 5h projection reads it as full.
+    const projections5 = new Map<string, AccountProjection>([
+      ['u', { ...atProjection('u', 1, 0, at + HOUR_MS), reset: null, hoursToReset: null }],
+      ['t', atProjection('t', 0.5, 0.1, at + 3 * HOUR_MS)],
+    ]);
+    const pools = buildPools(accounts, projections5, 'all', at, 5 * HOUR_MS);
+    for (const pool of [pools.max, pools.chart]) expect(pool.values.has('u')).toBe(false);
+    expect(pools.chart.capacity).toBe(TIER_CAPACITY_5H.team_premium);
+
+    // 72% left, burning 2% an hour: dry in 36h, before the reset 122h away.
+    const p7 = atProjection('u', 0.72, 0.02, reset7);
+    const rows = buildNowRows({
+      accounts,
+      projections5,
+      projections7: new Map([['u', p7]]),
+      windows5: new Map(),
+      windows7: new Map(),
+      pools,
+      now: at,
+    });
+    expect(rows[0]).toMatchObject({
+      used5: null,
+      reset5: null,
+      emptyIn5: 36,
+      emptyInWeekly: true,
+      blocked5: false,
+      reset7,
+    });
+    expect(rows[0].used7).toBeCloseTo(0.28, 10);
+    // A weekly window that outlasts its reset reads as a dash.
+    const lasting = buildNowRows({
+      accounts,
+      projections5,
+      projections7: new Map([['u', atProjection('u', 0.72, 0.001, reset7)]]),
+      windows5: new Map(),
+      windows7: new Map(),
+      pools,
+      now: at,
+    });
+    expect(lasting[0].emptyIn5).toBeNull();
+
+    const data = buildCapacityChart({
+      accounts: [accounts[0]],
+      samples: new Map([['u', ultra]]),
+      windows: new Map(),
+      kind: '5h',
+      from: Date.parse('2026-10-31T20:00:00Z'),
+      to: at,
+      points: 41,
+      tail: { horizonMs: 5 * HOUR_MS, projections: projections5, pool: pools.chart },
+    });
+    const [line] = data.series;
+    expect(line.pooled).toBe(false);
+    const after = data.times.findIndex((time) => time >= reset5);
+    expect(line.values.slice(after).every((value) => value === null)).toBe(true);
+    expect(line.values.slice(0, after).some((value) => value !== null)).toBe(true);
   });
 });
