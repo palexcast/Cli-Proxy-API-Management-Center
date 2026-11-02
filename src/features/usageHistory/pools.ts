@@ -5,14 +5,16 @@
  * The table and the runway tile read the plan pools (Team accounts with each other,
  * Max accounts with each other), so a row's "Empty in" never changes with the chart's
  * scope. Only the 5h chart, and its runway marker, follow the scope. Every pool weighs
- * its accounts by their tier's 5h capacity. An account with no reading yet, or one the
- * proxy no longer routes to (disabled or removed), is in no pool and reads as a dash.
+ * its accounts by their tier's 5h capacity. An account with no reading yet, one the
+ * proxy no longer routes to (disabled or removed), or one without a 5h limit (a verified
+ * Ultra account) is in no 5h pool; the last reads its "Empty in" from its weekly window.
  */
 
 import type { NowRow } from './components/NowTable';
 import {
   HOUR_MS,
   capacity5h,
+  inPool,
   isActive,
   lastLeftover,
   type AccountInfo,
@@ -43,7 +45,7 @@ export function buildPools(
   now: number,
   horizonMs: number
 ): Pools {
-  const accounts = all.filter(isActive);
+  const accounts = all.filter((account) => inPool(account, '5h'));
   const size = new Map(accounts.map((account) => [account.authId, capacity5h(account)]));
   const simulate = (list: AccountInfo[]) =>
     simulatePool(
@@ -72,7 +74,8 @@ export interface NowRowInput {
 /**
  * One row per account; "Empty in" and the 5h leftover come from the account's plan pool.
  * An account out of the pool keeps only its last leftover: its live figures would carry
- * a stale reading forward as if it still served requests.
+ * a stale reading forward as if it still served requests. An account without a 5h limit
+ * has no 5h figures; its "Empty in" is when its weekly window runs dry before the reset.
  */
 export function buildNowRows({
   accounts,
@@ -99,6 +102,26 @@ export function buildNowRows({
         reset7: null,
         lastLeftover: lastLeftover(planWindows, now),
         nextLeftover: null,
+        emptyInWeekly: false,
+      };
+    }
+    if (!account.fiveHourLimit) {
+      const lasts =
+        !p7 ||
+        p7.hoursToReset === null ||
+        !Number.isFinite(p7.emptyInHours) ||
+        p7.emptyInHours >= p7.hoursToReset;
+      return {
+        account,
+        used5: null,
+        reset5: null,
+        emptyIn5: lasts ? null : p7.emptyInHours,
+        blocked5: false,
+        used7: p7?.left == null ? null : 1 - p7.left,
+        reset7: p7?.reset ?? null,
+        lastLeftover: lastLeftover(planWindows, now),
+        nextLeftover: p7?.projectedLeftover ?? null,
+        emptyInWeekly: true,
       };
     }
     const pool = isTeam ? pools.team : pools.max;
@@ -126,6 +149,7 @@ export function buildNowRows({
       reset7: p7?.reset ?? null,
       lastLeftover: lastLeftover(planWindows, now),
       nextLeftover: isTeam ? pooledLeftover : (p7?.projectedLeftover ?? null),
+      emptyInWeekly: false,
     };
   });
 }

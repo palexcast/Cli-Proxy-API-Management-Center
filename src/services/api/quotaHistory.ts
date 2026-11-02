@@ -3,6 +3,17 @@ import { isRecord } from '@/utils/helpers';
 
 const QUOTA_HISTORY_TIMEOUT_MS = 30 * 1000;
 
+/**
+ * The subscription an account's OAuth profile reports, kept by the proxy from the last
+ * profile read through the api-call tool. Anthropic's own names: `rateLimitTier` is
+ * `default_claude_max_5x` for Max (and a Team Premium seat), `default_claude_max_20x`
+ * for Ultra.
+ */
+export interface QuotaHistoryPlan {
+  organizationType: string;
+  rateLimitTier: string;
+}
+
 /** A Claude auth the backend currently knows, used to map ids to labels. */
 export interface QuotaHistoryAccount {
   authId: string;
@@ -11,6 +22,8 @@ export interface QuotaHistoryAccount {
   provider: string;
   /** Switched off by the operator: still loaded, takes no requests. */
   disabled: boolean;
+  /** Absent until the proxy has seen the account's profile. */
+  plan?: QuotaHistoryPlan;
 }
 
 /**
@@ -74,6 +87,15 @@ const readStatus = (value: unknown): string | undefined => {
   return text || undefined;
 };
 
+const readPlan = (value: unknown): { plan?: QuotaHistoryPlan } => {
+  if (!isRecord(value)) return {};
+  const plan = {
+    organizationType: readText(value.organization_type),
+    rateLimitTier: readText(value.rate_limit_tier),
+  };
+  return plan.organizationType || plan.rateLimitTier ? { plan } : {};
+};
+
 const normalizeAccount = (value: unknown): QuotaHistoryAccount | null => {
   if (!isRecord(value)) return null;
   const authId = readText(value.auth_id);
@@ -84,6 +106,7 @@ const normalizeAccount = (value: unknown): QuotaHistoryAccount | null => {
     label: readText(value.label),
     provider: readText(value.provider).toLowerCase(),
     disabled: value.disabled === true,
+    ...readPlan(value.plan),
   };
 };
 

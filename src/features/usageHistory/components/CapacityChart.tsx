@@ -2,7 +2,6 @@ import { useId, useMemo, useState, type KeyboardEvent, type PointerEvent } from 
 import { useTranslation } from 'react-i18next';
 import type { ChartData } from '../chartData';
 import { formatShare, seriesColor } from '../format';
-import { isActive } from '../model';
 import styles from './CapacityChart.module.scss';
 
 const VIEW_WIDTH = 1000;
@@ -311,7 +310,7 @@ export function CapacityChart({
   const activeIndex =
     storedIndex === null || count === 0 ? null : Math.max(0, Math.min(storedIndex, count - 1));
   const slots = useMemo(() => series.map((entry) => entry.account.slot), [series]);
-  const muted = useMemo(() => series.map((entry) => !isActive(entry.account)), [series]);
+  const muted = useMemo(() => series.map((entry) => !entry.pooled), [series]);
 
   // Each band's height is its share of the total weight of the accounts with data, so
   // the stack reads as the share of the whole pool left; one never seen takes no room. A

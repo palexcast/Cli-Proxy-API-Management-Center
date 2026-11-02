@@ -18,8 +18,13 @@ export interface NowRow {
   /** Null when the account has no reading yet, as for every column below. */
   used5: number | null;
   reset5: number | null;
-  /** Hours until the account first runs dry in its plan's pooled 5h projection; null when it lasts. */
+  /**
+   * Hours until the account first runs dry in its plan's pooled 5h projection, or in its
+   * weekly projection when `emptyInWeekly`; null when it lasts.
+   */
   emptyIn5: number | null;
+  /** The account has no 5h limit, so "Empty in" is weekly and the 5h columns stay empty. */
+  emptyInWeekly: boolean;
   /** The weekly window is exhausted: no 5h requests until the weekly reset. */
   blocked5: boolean;
   used7: number | null;
@@ -112,12 +117,17 @@ export function NowTable({ rows, now, formatDuration, onTierChange }: NowTablePr
                 </td>
                 <td className={cell5Blocked}>{used(row.used5)}</td>
                 <td className={cell5Blocked}>{resetsIn(row.reset5)}</td>
-                <td className={cell5}>
+                <td className={row.emptyInWeekly ? styles.num : cell5}>
                   {row.blocked5
                     ? t('usage_history.blocked_by_weekly')
                     : row.emptyIn5 === null
                       ? '—'
-                      : formatDuration(row.emptyIn5 * HOUR_MS)}
+                      : row.emptyInWeekly
+                        ? t('usage_history.window_value', {
+                            window: t('usage_history.window_7d'),
+                            value: formatDuration(row.emptyIn5 * HOUR_MS),
+                          })
+                        : formatDuration(row.emptyIn5 * HOUR_MS)}
                 </td>
                 <td className={cell7}>{used(row.used7)}</td>
                 <td className={cell7}>{resetsIn(row.reset7)}</td>
