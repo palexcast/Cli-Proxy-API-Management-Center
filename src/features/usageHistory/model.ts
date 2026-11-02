@@ -25,8 +25,6 @@ export type Plan = 'team' | 'max';
  */
 export type Tier = 'team_standard' | 'team_premium' | 'max_5x' | 'max_20x';
 
-export const TIERS: readonly Tier[] = ['team_premium', 'team_standard', 'max_20x', 'max_5x'];
-
 export const TIER_PLAN: Record<Tier, Plan> = {
   team_standard: 'team',
   team_premium: 'team',
@@ -61,9 +59,6 @@ export const TIER_CAPACITY_7D: Record<Tier, number> = {
   max_20x: 10,
 };
 
-export const isTier = (value: unknown): value is Tier =>
-  typeof value === 'string' && (TIERS as readonly string[]).includes(value);
-
 export const WINDOW_SPAN_MS: Record<WindowKind, number> = {
   '5h': 5 * HOUR_MS,
   '7d': 7 * DAY_MS,
@@ -84,9 +79,8 @@ export interface AccountInfo {
   authId: string;
   /** Display text: explicit label, else file name, else the auth id. */
   label: string;
-  tier: Tier;
   /** From the account's plan when the proxy has seen its profile, else from its label. */
-  defaultTier: Tier;
+  tier: Tier;
   /** Derived from `tier`. */
   plan: Plan;
   /** Position in label order; picks the fixed series color. */
@@ -107,8 +101,6 @@ export const inPool = (
   account: Pick<AccountInfo, 'status' | 'fiveHourLimit'>,
   kind: WindowKind
 ): boolean => isActive(account) && (kind === '7d' || account.fiveHourLimit);
-
-export type TierOverrides = Record<string, Tier>;
 
 export interface WindowReading {
   /** Utilization 0..1. */
@@ -196,10 +188,7 @@ export function hasFiveHourLimit(samples: QuotaHistorySample[]): boolean {
  * order. Historical ids with no `accounts` entry fall back to their id and read as
  * removed.
  */
-export function buildAccounts(
-  history: Pick<QuotaHistory, 'accounts' | 'samples'>,
-  overrides: TierOverrides = {}
-): AccountInfo[] {
+export function buildAccounts(history: Pick<QuotaHistory, 'accounts' | 'samples'>): AccountInfo[] {
   const known = new Map<string, QuotaHistoryAccount>();
   history.accounts.forEach((account) => {
     if (!account.provider || account.provider === 'claude') known.set(account.authId, account);
@@ -211,10 +200,9 @@ export function buildAccounts(
     const account = known.get(authId);
     const explicit = account?.label ?? '';
     const label = explicit || account?.name || authId;
-    const defaultTier = tierForPlan(account?.plan) ?? defaultTierForLabel(explicit);
-    const tier = overrides[authId] ?? defaultTier;
+    const tier = tierForPlan(account?.plan) ?? defaultTierForLabel(explicit);
     const status: AccountStatus = !account ? 'removed' : account.disabled ? 'disabled' : 'active';
-    return { authId, label, tier, defaultTier, plan: TIER_PLAN[tier], status, fiveHourLimit: true };
+    return { authId, label, tier, plan: TIER_PLAN[tier], status, fiveHourLimit: true };
   });
 
   rows.sort((a, b) => a.label.localeCompare(b.label) || a.authId.localeCompare(b.authId));
@@ -291,13 +279,6 @@ export function buildWindows(
     }
   });
   return windows.sort((a, b) => a.reset - b.reset);
-}
-
-/** Leftover (1 - final utilization) of the last window that reset at or before `now`. */
-export function lastLeftover(windows: QuotaWindow[], now: number): number | null {
-  const ended = windows.filter((window) => window.reset <= now);
-  const last = ended[ended.length - 1];
-  return last ? 1 - last.finalUtilization : null;
 }
 
 /** Index of the last sample with `t <= time`, or -1. Samples are sorted by `t`. */

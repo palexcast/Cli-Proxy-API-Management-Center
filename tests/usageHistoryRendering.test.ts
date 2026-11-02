@@ -9,7 +9,7 @@ import {
   WINDOW_SPAN_MS,
   buildAccounts,
   capacity5h,
-  TIERS,
+  TIER_PLAN,
   type AccountInfo,
   buildWindows,
   groupSamplesByAccount,
@@ -27,11 +27,12 @@ import {
   type ChartData,
 } from '../src/features/usageHistory/chartData';
 import { CapacityChart } from '../src/features/usageHistory/components/CapacityChart';
-import { NowTable } from '../src/features/usageHistory/components/NowTable';
+import { ChartLegend } from '../src/features/usageHistory/components/Controls';
 import { RunwayTile } from '../src/features/usageHistory/components/RunwayTile';
-import { buildNowRows, buildPools } from '../src/features/usageHistory/pools';
+import { buildPools } from '../src/features/usageHistory/pools';
 import type { QuotaHistorySample } from '../src/services/api/quotaHistory';
 import { NOW, quotaHistoryResponse } from './fixtures/quotaHistory';
+import { accountEmptyAt } from './helpers/usageHistoryPool';
 
 const HOSTILE = '<img src=x onerror=alert(1)> team';
 const raw = {
@@ -96,9 +97,6 @@ const handMade = (
   left,
   rate,
   reset,
-  hoursToReset: reset === null ? null : (reset - NOW) / HOUR_MS,
-  emptyInHours: rate > 0 ? left / rate : Number.POSITIVE_INFINITY,
-  projectedLeftover: null,
   blockedUntil: null,
 });
 
@@ -109,7 +107,6 @@ function pooledChart(list: AccountProjection[]) {
     authId: entry.authId,
     label: entry.authId,
     tier: 'team_premium' as const,
-    defaultTier: 'team_premium' as const,
     plan: 'team' as const,
     slot,
     status: 'active' as const,
@@ -174,7 +171,7 @@ describe('usage history chart data', () => {
     const early = times.findLastIndex((time) => time <= NOW + 0.5 * HOUR_MS);
     expect(alex[early]).toBeCloseTo(0.55 - (0.15 * (times[early] - NOW)) / HOUR_MS, 2);
     // James is dry after about an hour; his share moves to Alex and Kay in proportion.
-    const jamesDry = teamPool.accountEmptyAt.get('claude-b2') ?? 0;
+    const jamesDry = accountEmptyAt(teamPool, 'claude-b2') ?? 0;
     expect(Math.abs(jamesDry - (NOW + HOUR_MS))).toBeLessThanOrEqual(60 * 1000);
     expect(james[times.indexOf(jamesDry)]).toBe(0);
     const beforeReset = at(2) - 1;
@@ -306,7 +303,6 @@ describe('usage history chart data', () => {
       authId: 'x',
       label: 'x',
       tier: 'max_20x' as const,
-      defaultTier: 'max_20x' as const,
       plan: 'max' as const,
       slot: 0,
       status: 'active',
@@ -458,47 +454,6 @@ describe('usage history rendering', () => {
     expect(tooltip).not.toContain('Invalid');
     expect(tooltip).toContain(new Date(shrunk.times[117]).toISOString());
   });
-
-  test('right-now table shows the pooled empty-in after the 5h resets-in, a dash when it lasts', () => {
-    const markup = renderToStaticMarkup(
-      createElement(NowTable, {
-        rows: accounts.map((account) => {
-          const p5 = projections.get(account.authId) as AccountProjection;
-          const emptyAt = teamPool.accountEmptyAt.get(account.authId) ?? null;
-          return {
-            account,
-            used5: p5.left === null ? null : 1 - p5.left,
-            reset5: p5.reset,
-            emptyIn5: emptyAt === null ? null : (emptyAt - NOW) / HOUR_MS,
-            blocked5: false,
-            used7: 0,
-            reset7: null,
-            lastLeftover: null,
-            nextLeftover: null,
-          };
-        }),
-        now: NOW,
-        formatDuration: (ms: number) => `${Math.round(ms / 60000)}min`,
-        onPlanChange: () => undefined,
-      })
-    );
-    const headers = [...markup.matchAll(/<th scope="col"[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]);
-    expect(headers.slice(2, 5)).toEqual(['5h used', 'Resets in', 'Empty in']);
-    const row = (label: string) => {
-      const start = markup.indexOf(label);
-      return markup.slice(start, markup.indexOf('</tr>', start));
-    };
-    const cells = (label: string) =>
-      [...row(label).matchAll(/<td[^>]*>([^<]*)<\/td>/g)].map((m) => m[1]);
-    // James: 0.25 left at about 0.25/h; resets in 2h.
-    const james = cells('James team');
-    expect(james.slice(0, 2)).toEqual(['75%', '120min']);
-    expect(['60min', '61min']).toContain(james[2]);
-    // Alex is drawn on harder once James is dry but refills at 14:00 first.
-    expect(cells('Alex NT team').slice(0, 3)).toEqual(['45%', '120min', '—']);
-    // Pete: never seen, so no reading at all.
-    expect(cells('Pete team').slice(0, 3)).toEqual(['—', '—', '—']);
-  });
 });
 
 describe('usage history stacked chart weights', () => {
@@ -508,7 +463,6 @@ describe('usage history stacked chart weights', () => {
       authId: 'a',
       label: 'a team',
       tier: 'team_premium',
-      defaultTier: 'team_premium',
       plan: 'team',
       slot: 0,
       status: 'active',
@@ -518,7 +472,6 @@ describe('usage history stacked chart weights', () => {
       authId: 'm',
       label: 'm max',
       tier: 'max_20x',
-      defaultTier: 'max_20x',
       plan: 'max',
       slot: 1,
       status: 'active',
@@ -574,7 +527,6 @@ describe('usage history stacked chart weights', () => {
       authId: 'n',
       label: 'n new',
       tier: 'max_20x',
-      defaultTier: 'max_20x',
       plan: 'max',
       slot: 2,
       status: 'active',
@@ -607,7 +559,7 @@ describe('usage history stacked chart weights', () => {
   });
 });
 
-describe('usage history right-now rows', () => {
+describe('usage history 5h pools', () => {
   // Team 'a' burns 1/h with 0.2 left, Team 'b' is idle at 0.6, Max 'm' burns 0.5/h at 0.9.
   const reset = NOW + 4 * HOUR_MS;
   const list: AccountInfo[] = [
@@ -615,7 +567,6 @@ describe('usage history right-now rows', () => {
       authId: 'a',
       label: 'a team',
       tier: 'team_premium',
-      defaultTier: 'team_premium',
       plan: 'team',
       slot: 0,
       status: 'active',
@@ -625,7 +576,6 @@ describe('usage history right-now rows', () => {
       authId: 'b',
       label: 'b team',
       tier: 'team_premium',
-      defaultTier: 'team_premium',
       plan: 'team',
       slot: 1,
       status: 'active',
@@ -635,7 +585,6 @@ describe('usage history right-now rows', () => {
       authId: 'm',
       label: 'm max',
       tier: 'max_20x',
-      defaultTier: 'max_20x',
       plan: 'max',
       slot: 2,
       status: 'active',
@@ -649,42 +598,27 @@ describe('usage history right-now rows', () => {
       handMade('m', 0.9, 0.5, reset),
     ].map((entry) => [entry.authId, entry])
   );
-  const rowsFor = (scope: 'team' | 'all') => {
-    const pools = buildPools(list, projections5, scope, NOW, FIVE_H);
-    const rows = buildNowRows({
-      accounts: list,
-      projections5,
-      projections7: new Map(),
-      windows5: new Map(),
-      windows7: new Map(),
-      pools,
-      now: NOW,
-    });
-    return { pools, rows };
-  };
+  const poolsFor = (scope: 'team' | 'all') => buildPools(list, projections5, scope, NOW, FIVE_H);
 
-  test('the chart scope moves the chart pool, never a table row or the tile', () => {
-    const team = rowsFor('team');
-    const all = rowsFor('all');
-    expect(all.rows).toEqual(team.rows);
-    expect(all.pools.team).toEqual(team.pools.team);
+  test('the chart scope moves the chart pool, never the tile', () => {
+    const team = poolsFor('team');
+    const all = poolsFor('all');
+    expect(all.team).toEqual(team.team);
     // The chart itself does follow the scope: pooled with 'm', the accounts last longer.
-    expect(team.pools.chart.emptyAt).toBe(NOW + 48 * 60 * 1000);
+    expect(team.chart.emptyAt).toBe(NOW + 48 * 60 * 1000);
     // In Pro sessions: 'a' burns 6.25/h and is dry at 12 minutes; Max 20x 'm' then holds
     // 16 at 16.25/h, dry at about 71 minutes; idle 'b' holds 3.75 and lasts to 85.
-    expect(all.pools.chart.demand).toBeCloseTo(16.25, 10);
-    expect(all.pools.chart.accountEmptyAt.get('a')).toBe(NOW + 12 * 60 * 1000);
-    expect(all.pools.chart.accountEmptyAt.get('m')).toBe(NOW + 72 * 60 * 1000);
-    expect(all.pools.chart.emptyAt).toBe(NOW + 85 * 60 * 1000);
-    expect(all.pools.chart.accountEmptyAt.get('b')).toBe(NOW + 85 * 60 * 1000);
+    expect(all.chart.demand).toBeCloseTo(16.25, 10);
+    expect(accountEmptyAt(all.chart, 'a')).toBe(NOW + 12 * 60 * 1000);
+    expect(accountEmptyAt(all.chart, 'm')).toBe(NOW + 72 * 60 * 1000);
+    expect(all.chart.emptyAt).toBe(NOW + 85 * 60 * 1000);
+    expect(accountEmptyAt(all.chart, 'b')).toBe(NOW + 85 * 60 * 1000);
   });
 
-  test("a Team row's empty-in matches the tile when the Team pool runs dry", () => {
-    const { pools, rows } = rowsFor('all');
-    const emptyAt = pools.team.emptyAt ?? 0;
-    expect(emptyAt).toBe(NOW + 48 * 60 * 1000);
-    const b = rows.find((row) => row.account.authId === 'b');
-    expect(b?.emptyIn5).toBeCloseTo((emptyAt - NOW) / HOUR_MS, 10);
+  test('the tile reads the Team pool: Team accounts only, whatever the scope', () => {
+    const pools = poolsFor('all');
+    expect(pools.team.values.has('m')).toBe(false);
+    expect(pools.team.emptyAt).toBe(NOW + 48 * 60 * 1000);
     const format = (ms: number) => `${Math.round(ms / 60000)}min`;
     const tile = renderToStaticMarkup(
       createElement(RunwayTile, {
@@ -695,9 +629,6 @@ describe('usage history right-now rows', () => {
       })
     );
     expect(tile).toContain('>48min<');
-    // Max rows read the Max-only pool: 'm' alone at 0.5/h runs dry at 1.8h.
-    const m = rows.find((row) => row.account.authId === 'm');
-    expect(m?.emptyIn5).toBeCloseTo(1.8, 10);
   });
 });
 
@@ -710,7 +641,6 @@ describe('usage history no-data gaps and weekly blocks', () => {
       authId: 'a',
       label: 'a team',
       tier: 'team_premium',
-      defaultTier: 'team_premium',
       plan: 'team',
       slot: 0,
       status: 'active',
@@ -720,7 +650,6 @@ describe('usage history no-data gaps and weekly blocks', () => {
       authId: 'n',
       label: 'n team',
       tier: 'team_premium',
-      defaultTier: 'team_premium',
       plan: 'team',
       slot: 1,
       status: 'active',
@@ -730,7 +659,6 @@ describe('usage history no-data gaps and weekly blocks', () => {
       authId: 'z',
       label: 'z team',
       tier: 'team_premium',
-      defaultTier: 'team_premium',
       plan: 'team',
       slot: 2,
       status: 'active',
@@ -740,7 +668,6 @@ describe('usage history no-data gaps and weekly blocks', () => {
       authId: 'w',
       label: 'w team',
       tier: 'team_premium',
-      defaultTier: 'team_premium',
       plan: 'team',
       slot: 3,
       status: 'active',
@@ -881,38 +808,9 @@ describe('usage history no-data gaps and weekly blocks', () => {
     expect(pools.team.values.get('w')?.[0]).toBe(0);
   });
 
-  test('right-now rows: a dash with no reading, "blocked by weekly" in Empty in', () => {
+  test('an account never seen is not pooled', () => {
     expect(pools.team.values.has('z')).toBe(false);
-    const rows = buildNowRows({
-      accounts: list,
-      projections5,
-      projections7: new Map(),
-      windows5: new Map(),
-      windows7: new Map(),
-      pools,
-      now: NOW,
-    });
-    const z = rows.find((row) => row.account.authId === 'z');
-    expect(z).toMatchObject({ used5: null, reset5: null, emptyIn5: null, blocked5: false });
-    const w = rows.find((row) => row.account.authId === 'w');
-    expect(w?.blocked5).toBe(true);
-    expect(w?.used5).toBeCloseTo(0.2, 10);
-
-    const markup = renderToStaticMarkup(
-      createElement(NowTable, {
-        rows,
-        now: NOW,
-        formatDuration: (ms: number) => `${Math.round(ms / 60000)}min`,
-        onPlanChange: () => undefined,
-      })
-    );
-    const cells = (label: string) => {
-      const start = markup.indexOf(label);
-      const row = markup.slice(start, markup.indexOf('</tr>', start));
-      return [...row.matchAll(/<td[^>]*>([^<]*)<\/td>/g)].map((m) => m[1]);
-    };
-    expect(cells('z team').slice(0, 4)).toEqual(['—', '—', '—', '—']);
-    expect(cells('w team').slice(0, 3)).toEqual(['20%', '240min', 'blocked by weekly']);
+    expect(pools.team.values.has('n')).toBe(true);
   });
 });
 
@@ -942,7 +840,9 @@ describe('usage history translations', () => {
 
   test('every tier has a label', () => {
     const known = new Set(Object.keys(readMessages('en')));
-    expect(TIERS.filter((tier) => !known.has(`tier_${tier}`))).toEqual([]);
+    const tiers = Object.keys(TIER_PLAN);
+    expect(tiers).toHaveLength(4);
+    expect(tiers.filter((tier) => !known.has(`tier_${tier}`))).toEqual([]);
   });
 
   test('every literal usage_history key the feature uses exists', () => {
@@ -962,37 +862,19 @@ describe('usage history translations', () => {
 });
 
 describe('usage history accounts out of the pool', () => {
-  test('a disabled account is tagged in the table', () => {
+  test('a disabled account is tagged in the legend', () => {
     const off: AccountInfo = {
       authId: 'off',
       label: 'Off max',
       tier: 'max_20x',
-      defaultTier: 'max_20x',
       plan: 'max',
       slot: 0,
       status: 'disabled',
       fiveHourLimit: true,
     };
-    const table = renderToStaticMarkup(
-      createElement(NowTable, {
-        rows: [
-          {
-            account: off,
-            used5: null,
-            reset5: null,
-            emptyIn5: null,
-            blocked5: false,
-            used7: null,
-            reset7: null,
-            lastLeftover: 0.3,
-            nextLeftover: null,
-          },
-        ],
-        now: NOW,
-        formatDuration: () => '',
-        onTierChange: () => {},
-      })
+    const legend = renderToStaticMarkup(
+      createElement(ChartLegend, { accounts: [off], activeIds: new Set(['off']), kind: '5h' })
     );
-    expect(table).toContain('>Disabled</span>');
+    expect(legend).toContain('>Disabled</span>');
   });
 });
