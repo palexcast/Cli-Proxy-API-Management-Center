@@ -23,7 +23,6 @@ import { useAuthStore } from '@/stores';
 import { axisPosition, buildCapacityChart, type ChartData } from './chartData';
 import { CapacityChart, type AxisTick, type ChartMarker } from './components/CapacityChart';
 import { ChartLegend, Segmented } from './components/Controls';
-import { NowTable, type NowRow } from './components/NowTable';
 import { RunwayTile } from './components/RunwayTile';
 import { durationParts } from './format';
 import { useQuotaHistory } from './hooks/useQuotaHistory';
@@ -43,12 +42,9 @@ import {
   isActive,
   type AccountInfo,
   type QuotaWindow,
-  type Tier,
-  type TierOverrides,
 } from './model';
-import { buildNowRows, buildPools, type TeamScope } from './pools';
+import { buildPools, type TeamScope } from './pools';
 import { projectAccount, type AccountProjection } from './projection';
-import { readTierOverrides, writeTierOverrides } from './settings';
 import styles from './UsageHistoryPage.module.scss';
 
 type Range5 = '6h' | '12h' | '24h' | '48h' | '7d';
@@ -104,7 +100,6 @@ export function UsageHistoryPage() {
   const [range5, setRange5] = useState<Range5>('6h');
   const [range7, setRange7] = useState<Range7>('4w');
   const [scope5, setScope5] = useState<TeamScope>('all');
-  const [overrides, setOverrides] = useState<TierOverrides>(readTierOverrides);
 
   // Two requests with their own caches; each starts one window before its range so a
   // window already open at the range start carries its value in.
@@ -172,10 +167,10 @@ export function UsageHistoryPage() {
 
   const model = useMemo<Model | null>(() => {
     if (!h5 || !h7) return null;
-    const listed = buildAccounts(
-      { accounts: [...h5.accounts, ...h7.accounts], samples: [...h5.samples, ...h7.samples] },
-      overrides
-    );
+    const listed = buildAccounts({
+      accounts: [...h5.accounts, ...h7.accounts],
+      samples: [...h5.samples, ...h7.samples],
+    });
     const fine5 = groupSamplesByAccount(h5.samples);
     const samples7 = groupSamplesByAccount(h7.samples);
     const samples5 = new Map(
@@ -185,11 +180,14 @@ export function UsageHistoryPage() {
       ])
     );
     // The 5h samples carry the weekly lead, so they reach the last 5h reading even when
-    // the 5h range holds only weekly ones.
-    const accounts = listed.map((account) => ({
-      ...account,
-      fiveHourLimit: hasFiveHourLimit(samples5.get(account.authId) ?? []),
-    }));
+    // the 5h range holds only weekly ones. A disabled account is left off the page; it
+    // is filtered after buildAccounts so every other account keeps its color slot.
+    const accounts = listed
+      .filter((account) => account.status !== 'disabled')
+      .map((account) => ({
+        ...account,
+        fiveHourLimit: hasFiveHourLimit(samples5.get(account.authId) ?? []),
+      }));
     const windows5 = new Map<string, QuotaWindow[]>();
     const windows7 = new Map<string, QuotaWindow[]>();
     const projections5 = new Map<string, AccountProjection>();
@@ -215,14 +213,14 @@ export function UsageHistoryPage() {
       projections7,
       start: starts.length > 0 ? Math.min(...starts) : null,
     };
-  }, [h5, h7, overrides, now]);
+  }, [h5, h7, now]);
 
   const team = useMemo(
     () => model?.accounts.filter((account) => account.plan === 'team') ?? [],
     [model]
   );
 
-  /** Pooled 5h simulations: the plan pools for the tile and the table, and the chart's scope. */
+  /** Pooled 5h simulations: the Team pool for the tile, and the chart's scope. */
   const pools = useMemo(
     () => (model ? buildPools(model.accounts, model.projections5, scope5, now, TAIL_5H_MS) : null),
     [model, scope5, now]
@@ -320,23 +318,6 @@ export function UsageHistoryPage() {
     });
     return { accounts, data, markers: [nowMarker(data)], ticks: axisTicks(data, 'day') };
   }, [model, now, span7, axisTicks, nowMarker]);
-
-  const nowRows = useMemo<NowRow[]>(
-    () => (model && pools ? buildNowRows({ ...model, pools, now }) : []),
-    [model, pools, now]
-  );
-
-  /* ---------- settings ---------- */
-
-  const changeTier = useCallback((account: AccountInfo, tier: Tier) => {
-    setOverrides((current) => {
-      const next = { ...current };
-      if (tier === account.defaultTier) delete next[account.authId];
-      else next[account.authId] = tier;
-      writeTierOverrides(next);
-      return next;
-    });
-  }, []);
 
   /* ---------- render ---------- */
 
@@ -497,19 +478,6 @@ export function UsageHistoryPage() {
               activeIds={activeIds(chart7.accounts)}
               kind="7d"
               showProjected
-            />
-          </section>
-
-          <section className={styles.panel}>
-            <div className={styles.panelHead}>
-              <h2 className={styles.panelTitle}>{t('usage_history.section_now_title')}</h2>
-              <p className={styles.panelDescription}>{t('usage_history.section_now_desc')}</p>
-            </div>
-            <NowTable
-              rows={nowRows}
-              now={now}
-              formatDuration={formatDuration}
-              onTierChange={changeTier}
             />
           </section>
         </>

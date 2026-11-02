@@ -17,15 +17,13 @@ import {
   capacityLeftSeries,
   DAY_MS,
   groupSamplesByAccount,
-  lastLeftover,
   mergeSamples,
   thinSamples,
   withLead,
   type AccountInfo,
 } from '../src/features/usageHistory/model';
-import { buildNowRows, buildPools } from '../src/features/usageHistory/pools';
+import { buildPools } from '../src/features/usageHistory/pools';
 import { buildCapacityChart } from '../src/features/usageHistory/chartData';
-import { parseTierOverrides } from '../src/features/usageHistory/settings';
 import {
   burnRate,
   MIN_WEEKLY_ELAPSED_MS,
@@ -42,6 +40,7 @@ import {
 } from '../src/features/usageHistory/historyCache';
 import type { QuotaHistory, QuotaHistorySample } from '../src/services/api/quotaHistory';
 import { NOW, SINCE, quotaHistoryResponse } from './fixtures/quotaHistory';
+import { accountEmptyAt } from './helpers/usageHistoryPool';
 
 const history = normalizeQuotaHistory(quotaHistoryResponse);
 const byAccount = groupSamplesByAccount(history.samples);
@@ -132,20 +131,16 @@ describe('buildAccounts', () => {
     ]);
   });
 
-  test('applies per-account overrides and keeps historical ids from samples', () => {
-    const accounts = buildAccounts(
-      {
-        accounts: [{ authId: 'x', name: 'x.json', label: '', provider: 'claude' }],
-        samples: [{ t: 1, authId: 'gone' }],
-      },
-      { x: 'team_standard' }
-    );
+  test('keeps historical ids from samples', () => {
+    const accounts = buildAccounts({
+      accounts: [{ authId: 'x', name: 'x.json', label: '', provider: 'claude' }],
+      samples: [{ t: 1, authId: 'gone' }],
+    });
     expect(accounts).toEqual([
       {
         authId: 'gone',
         label: 'gone',
         tier: 'max_20x',
-        defaultTier: 'max_20x',
         plan: 'max',
         slot: 0,
         status: 'removed',
@@ -154,9 +149,8 @@ describe('buildAccounts', () => {
       {
         authId: 'x',
         label: 'x.json',
-        tier: 'team_standard',
-        defaultTier: 'max_20x',
-        plan: 'team',
+        tier: 'max_20x',
+        plan: 'max',
         slot: 1,
         status: 'active',
         fiveHourLimit: true,
@@ -183,24 +177,6 @@ describe('buildAccounts', () => {
       max_20x: 20,
     });
   });
-});
-
-describe('parseTierOverrides', () => {
-  test('keeps tiers, maps overrides saved as a plan to its default tier, drops the rest', () => {
-    expect(
-      parseTierOverrides({
-        a: 'max_5x',
-        b: 'team',
-        c: 'max',
-        d: 'pro',
-        e: 7,
-        f: 'constructor',
-        '': 'team_premium',
-      })
-    ).toEqual({ a: 'max_5x', b: 'team_premium', c: 'max_20x' });
-    expect(parseTierOverrides(null)).toEqual({});
-    expect(parseTierOverrides(['team'])).toEqual({});
-  });
 
   test('includes the idle account although it has no samples', () => {
     expect(samplesOf('claude-d4')).toHaveLength(0);
@@ -219,13 +195,6 @@ describe('windows', () => {
     expect(morning?.finalUtilization).toBe(0.8);
     expect(afternoon?.finalUtilization).toBe(0.4);
     expect(afternoon?.lastSampleAt).toBe(at('2026-10-20T19:50:00Z'));
-  });
-
-  test('a window that resets with capacity left reports the leftover', () => {
-    const windows = buildWindows('claude-b2', samplesOf('claude-b2'), '5h');
-    expect(lastLeftover(windows, NOW)).toBeCloseTo(0.6, 10);
-    const full = buildWindows('claude-a1', samplesOf('claude-a1'), '5h');
-    expect(lastLeftover(full, at('2026-10-26T14:00:00Z'))).toBe(0);
   });
 
   test('7d windows carry the weekly final', () => {
@@ -294,17 +263,17 @@ describe('projection', () => {
   test('per-account projection against the next reset', () => {
     const alex = projectAccount('claude-a1', samplesOf('claude-a1'), '5h', NOW);
     expect(alex.left).toBeCloseTo(0.55, 10);
-    expect(alex.hoursToReset).toBeCloseTo(2, 10);
-    expect(alex.emptyInHours).toBeCloseTo(0.55 / 0.15, 2);
-    expect(alex.projectedLeftover).toBeCloseTo(0.25, 3);
+    expect(alex.reset).toBe(NOW + 2 * HOUR_MS);
+    expect(alex.rate).toBeCloseTo(0.15, 3);
+    // Just before the reset, draining alone: 0.55 - 0.15 * 2.
+    expect(projectedLeftAt(alex, '5h', NOW, NOW + 2 * HOUR_MS - 1)).toBeCloseTo(0.25, 3);
 
     const james = projectAccount('claude-b2', samplesOf('claude-b2'), '5h', NOW);
-    expect(james.emptyInHours).toBeCloseTo(1, 2);
-    expect(james.projectedLeftover).toBe(0);
+    expect(james.rate).toBeCloseTo(0.25, 3);
+    expect(projectedLeftAt(james, '5h', NOW, (james.reset ?? NOW) - 1)).toBe(0);
 
     const pete = projectAccount('claude-d4', samplesOf('claude-d4'), '5h', NOW);
-    expect(pete).toMatchObject({ left: null, rate: 0, reset: null, projectedLeftover: null });
-    expect(pete.emptyInHours).toBe(Number.POSITIVE_INFINITY);
+    expect(pete).toMatchObject({ left: null, rate: 0, reset: null });
   });
 
   test('weekly rate is the open window average, not a slope through a burst', () => {
@@ -322,8 +291,8 @@ describe('projection', () => {
     const projection = projectAccount('x', burst, '7d', NOW);
     expect(projection.left).toBeCloseTo(0.6, 10);
     expect(projection.rate).toBeCloseTo(0.4 / 96, 10);
-    // The slope through the burst would be 0.05/h: empty in 12 hours.
-    expect(projection.emptyInHours).toBeCloseTo(144, 6);
+    // The slope through the burst would be 0.05/h: empty in 12 hours, not 144.
+    expect(projectedLeftAt(projection, '7d', NOW, NOW + 12 * HOUR_MS)).toBeCloseTo(0.55, 6);
     expect(projectAccount('x', burst, '7d', reset + 1).rate).toBe(0);
   });
 
@@ -334,13 +303,10 @@ describe('projection', () => {
     const fresh = projectAccount('x', [{ t: NOW, authId: 'x', u7: 0.02, r7: reset }], '7d', NOW);
     // Unfloored this would be 1.2/h: drawn empty within the hour, 0% at the next reset.
     expect(fresh.rate).toBeCloseTo(0.02 / 24, 12);
-    expect(fresh.emptyInHours).toBeCloseTo(0.98 / (0.02 / 24), 6);
-    // About 0.98 - 0.02 / 24 * 168 = 0.84 left: a week at a day's average.
-    expect(fresh.projectedLeftover ?? 0).toBeCloseTo(
-      0.98 - ((0.02 / 24) * (reset - NOW)) / HOUR_MS,
-      10
-    );
-    expect(fresh.projectedLeftover ?? 0).toBeGreaterThan(0.8);
+    // About 0.98 - 0.02 / 24 * 168 = 0.84 left just before the reset: a week at a day's average.
+    const beforeReset = projectedLeftAt(fresh, '7d', NOW, reset - 1) ?? 0;
+    expect(beforeReset).toBeCloseTo(0.98 - ((0.02 / 24) * (reset - NOW)) / HOUR_MS, 6);
+    expect(beforeReset).toBeGreaterThan(0.8);
 
     const later = NOW - 72 * HOUR_MS + 7 * 24 * HOUR_MS;
     const steady = projectAccount('y', [{ t: NOW, authId: 'y', u7: 0.4, r7: later }], '7d', NOW);
@@ -369,9 +335,6 @@ const projection = (
   left,
   rate,
   reset,
-  hoursToReset: reset === null ? null : (reset - NOW) / HOUR_MS,
-  emptyInHours: rate > 0 ? left / rate : Number.POSITIVE_INFINITY,
-  projectedLeftover: null,
   blockedUntil: null,
 });
 
@@ -486,8 +449,8 @@ describe('pooled 5h simulation', () => {
     expect(pool.demand).toBe(1);
     expect(pool.total).toHaveLength(301);
     // 'a' carries the whole 1.0/h until it runs dry at 30 minutes; 'b' then takes it.
-    expect(pool.accountEmptyAt.get('a')).toBe(NOW + 30 * 60 * 1000);
-    expect(pool.accountEmptyAt.get('b')).toBe(NOW + 1.4 * HOUR_MS);
+    expect(accountEmptyAt(pool, 'a')).toBe(NOW + 30 * 60 * 1000);
+    expect(accountEmptyAt(pool, 'b')).toBe(NOW + 1.4 * HOUR_MS);
     expect(pool.emptyAt).toBe(NOW + 1.4 * HOUR_MS);
     expect(pool.total[83]).toBeGreaterThan(0);
     expect(pool.total[84]).toBe(0);
@@ -506,7 +469,7 @@ describe('pooled 5h simulation', () => {
       FIVE_H
     );
     // 'a' is dry at 40 minutes; 'b' and 'c' then take 0.15/h each.
-    expect(pool.accountEmptyAt.get('a')).toBe(NOW + 40 * 60 * 1000);
+    expect(accountEmptyAt(pool, 'a')).toBe(NOW + 40 * 60 * 1000);
     expect(pool.values.get('b')?.[39]).toBe(1);
     expect(pool.values.get('b')?.[100]).toBeCloseTo(1 - 0.15, 10);
     expect(pool.values.get('c')?.[100]).toBeCloseTo(1 - 0.15, 10);
@@ -530,7 +493,7 @@ describe('pooled 5h simulation', () => {
     expect(pool.demand).toBe(2.5);
     expect(pool.capacity).toBe(4);
     // Each takes its own measured share until 'a' is dry at 30 minutes.
-    expect(pool.accountEmptyAt.get('a')).toBe(NOW + 30 * 60 * 1000);
+    expect(accountEmptyAt(pool, 'a')).toBe(NOW + 30 * 60 * 1000);
     expect(pool.values.get('m')?.[30]).toBeCloseTo(0.75, 10);
     // Then 'm' carries all 2.5 units/h: 2.25 units last 54 minutes, 0.833 of its window
     // per hour. Counted as shares of its own window it would take 1.5/h and empty at 60.
@@ -548,7 +511,7 @@ describe('pooled 5h simulation', () => {
     );
     // 'a' is dry at 40 minutes; 'b' and 'c' then take 0.15 units/h each, which is
     // 0.15/h of 'b' but only 0.0375/h of 'c', four times the size.
-    expect(pool.accountEmptyAt.get('a')).toBe(NOW + 40 * 60 * 1000);
+    expect(accountEmptyAt(pool, 'a')).toBe(NOW + 40 * 60 * 1000);
     expect(pool.values.get('b')?.[100]).toBeCloseTo(1 - 0.15, 10);
     expect(pool.values.get('c')?.[100]).toBeCloseTo(1 - 0.0375, 10);
   });
@@ -563,9 +526,9 @@ describe('pooled 5h simulation', () => {
     expect(pool.nextRefill).toBe(NOW + 2 * HOUR_MS);
     // James: 0.25 left at the fitted ~0.25/h, dry after about an hour.
     expect(
-      Math.abs((pool.accountEmptyAt.get('claude-b2') ?? 0) - (NOW + HOUR_MS))
+      Math.abs((accountEmptyAt(pool, 'claude-b2') ?? 0) - (NOW + HOUR_MS))
     ).toBeLessThanOrEqual(60 * 1000);
-    expect(pool.accountEmptyAt.get('claude-a1')).toBeNull();
+    expect(accountEmptyAt(pool, 'claude-a1')).toBeNull();
     expect(Math.min(...pool.total)).toBeGreaterThan(0);
   });
 
@@ -573,7 +536,7 @@ describe('pooled 5h simulation', () => {
     const unseen = { ...projection('n', 1, 0.5, null), left: null };
     const pool = simulatePool([projection('a', 0.5, 1, NOW + 4 * HOUR_MS), unseen], NOW, FIVE_H);
     expect(pool.values.has('n')).toBe(false);
-    expect(pool.accountEmptyAt.has('n')).toBe(false);
+    expect(accountEmptyAt(pool, 'n')).toBeUndefined();
     expect(pool.demand).toBe(1);
     expect(pool.total[0]).toBe(0.5);
     expect(pool.emptyAt).toBe(NOW + 30 * 60 * 1000);
@@ -594,7 +557,7 @@ describe('pooled 5h simulation', () => {
     expect(pool.capacity).toBe(1);
     expect(pool.demand).toBeCloseTo(0.6, 10);
     // Not drained while 'a' runs dry at 100 minutes and the pool sits empty.
-    near(pool.accountEmptyAt.get('a'), NOW + 100 * 60 * 1000);
+    near(accountEmptyAt(pool, 'a'), NOW + 100 * 60 * 1000);
     near(pool.emptyAt, NOW + 100 * 60 * 1000);
     expect(w[119]).toBe(0);
     // Rejoins at r7 with its untouched 0.8, then carries the 0.6/h alone.
@@ -629,7 +592,6 @@ describe('accountsWithWeeklyReadings', () => {
       authId,
       label: authId,
       tier: 'max_20x',
-      defaultTier: 'max_20x',
       plan: 'max',
       slot: 0,
       status: 'active',
@@ -645,51 +607,6 @@ describe('accountsWithWeeklyReadings', () => {
       samples
     );
     expect(kept.map((item) => item.authId)).toEqual(['max']);
-  });
-});
-
-describe('buildNowRows', () => {
-  const FIVE_H = 5 * HOUR_MS;
-  const r5 = NOW + 4 * HOUR_MS;
-  const account = (authId: string): AccountInfo => ({
-    authId,
-    label: authId,
-    tier: 'team_premium',
-    defaultTier: 'team_premium',
-    plan: 'team',
-    slot: 0,
-    status: 'active',
-    fiveHourLimit: true,
-  });
-  const rows = (blockedUntil: number) => {
-    const accounts = [account('a'), account('w')];
-    const projections5 = new Map<string, AccountProjection>([
-      ['a', projection('a', 1, 0.6, null)],
-      ['w', { ...projection('w', 0.8, 0, r5), blockedUntil }],
-    ]);
-    const pools = buildPools(accounts, projections5, 'team', NOW, FIVE_H);
-    return buildNowRows({
-      accounts,
-      projections5,
-      projections7: new Map(),
-      windows5: new Map(),
-      windows7: new Map(),
-      pools,
-      now: NOW,
-    });
-  };
-
-  test('a weekly block past the 5h reset leaves that leftover untouched', () => {
-    const [, w] = rows(r5 + HOUR_MS);
-    expect(w.blocked5).toBe(true);
-    expect(w.nextLeftover).toBeCloseTo(0.8, 10);
-  });
-
-  test('a weekly block that ends before the reset reads the pooled tail', () => {
-    const [, w] = rows(NOW + 3 * HOUR_MS);
-    expect(w.blocked5).toBe(true);
-    // 'a' is dry by then; 'w' rejoins at r7 with 0.8 and carries 0.6/h alone for an hour.
-    expect(w.nextLeftover).toBeCloseTo(0.2, 1);
   });
 });
 
@@ -904,7 +821,6 @@ describe('accounts out of the pool', () => {
     authId,
     label: authId,
     tier: 'max_20x',
-    defaultTier: 'max_20x',
     plan: 'max',
     slot: 0,
     status,
@@ -926,55 +842,17 @@ describe('accounts out of the pool', () => {
     ]);
   });
 
-  test('pools leave a disabled account out; its row keeps only the last leftover', () => {
+  test('pools leave a disabled account out', () => {
     const accounts = [account('on', 'active'), account('off', 'disabled')];
     const projections5 = new Map<string, AccountProjection>([
       ['on', projection('on', 1, 0.5, null)],
       ['off', projection('off', 1, 0, null)],
     ]);
     const pools = buildPools(accounts, projections5, 'all', NOW, FIVE_H);
-    for (const pool of [pools.max, pools.chart]) {
-      expect(pool.values.has('on')).toBe(true);
-      expect(pool.values.has('off')).toBe(false);
-    }
+    expect(pools.chart.values.has('on')).toBe(true);
+    expect(pools.chart.values.has('off')).toBe(false);
     // 'on' alone drains at 0.5/h: dry in 2h, which 'off' would otherwise have stretched.
-    expect(pools.max.emptyAt).toBeCloseTo(NOW + 2 * HOUR_MS, -3);
-    const windows7 = new Map([
-      [
-        'off',
-        [
-          {
-            authId: 'off',
-            kind: '7d' as const,
-            start: NOW - 8 * DAY_MS,
-            reset: NOW - DAY_MS,
-            finalUtilization: 0.7,
-            lastSampleAt: NOW - DAY_MS - HOUR_MS,
-          },
-        ],
-      ],
-    ]);
-    const [, off] = buildNowRows({
-      accounts,
-      projections5,
-      projections7: new Map([['off', projection('off', 0.3, 0, NOW + DAY_MS)]]),
-      windows5: new Map(),
-      windows7,
-      pools,
-      now: NOW,
-    });
-    expect(off).toEqual({
-      account: accounts[1],
-      used5: null,
-      reset5: null,
-      emptyIn5: null,
-      blocked5: false,
-      used7: null,
-      reset7: null,
-      lastLeftover: expect.closeTo(0.3, 10),
-      nextLeftover: null,
-      emptyInWeekly: false,
-    });
+    expect(pools.chart.emptyAt).toBeCloseTo(NOW + 2 * HOUR_MS, -3);
   });
 
   test('the chart keeps history until the last reading resets, then no band and no tail', () => {
@@ -1033,35 +911,28 @@ describe('plans renamed on 2026-10-30: Max and Ultra', () => {
     ).toBeNull();
     expect(tierForPlan(undefined)).toBeNull();
 
-    const accounts = buildAccounts(
-      {
-        accounts: [
-          {
-            authId: 'personal',
-            name: 'p.json',
-            label: 'Alex team-ish',
-            provider: 'claude',
-            disabled: false,
-            plan: { organizationType: 'claude_max', rateLimitTier: 'default_claude_max_5x' },
-          },
-          {
-            authId: 'unknown',
-            name: 'u.json',
-            label: 'NT team',
-            provider: 'claude',
-            disabled: false,
-          },
-        ],
-        samples: [],
-      },
-      { personal: 'max_20x' }
-    );
+    const accounts = buildAccounts({
+      accounts: [
+        {
+          authId: 'personal',
+          name: 'p.json',
+          label: 'Alex team-ish',
+          provider: 'claude',
+          disabled: false,
+          plan: { organizationType: 'claude_max', rateLimitTier: 'default_claude_max_5x' },
+        },
+        {
+          authId: 'unknown',
+          name: 'u.json',
+          label: 'NT team',
+          provider: 'claude',
+          disabled: false,
+        },
+      ],
+      samples: [],
+    });
     const [personal, unknown] = accounts;
-    expect([personal.defaultTier, personal.tier, unknown.defaultTier]).toEqual([
-      'max_5x',
-      'max_20x',
-      'team_premium',
-    ]);
+    expect([personal.tier, unknown.tier]).toEqual(['max_5x', 'team_premium']);
     expect(accounts.every((account) => account.fiveHourLimit)).toBe(true);
   });
 
@@ -1142,7 +1013,7 @@ describe('accounts without a 5h limit', () => {
     expect(hasFiveHourLimit([])).toBe(true);
   });
 
-  test('it leaves the 5h pools, reads Empty in from its weekly window and ends its 5h line', () => {
+  test('it leaves the 5h pools and ends its 5h line', () => {
     const at = Date.parse('2026-11-02T12:00:00Z');
     const account = (
       authId: string,
@@ -1152,7 +1023,6 @@ describe('accounts without a 5h limit', () => {
       authId,
       label: authId,
       tier,
-      defaultTier: tier,
       plan: tier.startsWith('team') ? 'team' : 'max',
       slot: 0,
       status: 'active',
@@ -1173,51 +1043,16 @@ describe('accounts without a 5h limit', () => {
       left,
       rate,
       reset,
-      hoursToReset: (reset - at) / HOUR_MS,
-      emptyInHours: rate > 0 ? left / rate : Number.POSITIVE_INFINITY,
-      projectedLeftover: Math.max(0, left - rate * ((reset - at) / HOUR_MS)),
       blockedUntil: null,
     });
     // Its 5h reading reset on Oct 31, so the 5h projection reads it as full.
     const projections5 = new Map<string, AccountProjection>([
-      ['u', { ...atProjection('u', 1, 0, at + HOUR_MS), reset: null, hoursToReset: null }],
+      ['u', { ...atProjection('u', 1, 0, at + HOUR_MS), reset: null }],
       ['t', atProjection('t', 0.5, 0.1, at + 3 * HOUR_MS)],
     ]);
     const pools = buildPools(accounts, projections5, 'all', at, 5 * HOUR_MS);
-    for (const pool of [pools.max, pools.chart]) expect(pool.values.has('u')).toBe(false);
+    for (const pool of [pools.team, pools.chart]) expect(pool.values.has('u')).toBe(false);
     expect(pools.chart.capacity).toBe(TIER_CAPACITY_5H.team_premium);
-
-    // 72% left, burning 2% an hour: dry in 36h, before the reset 122h away.
-    const p7 = atProjection('u', 0.72, 0.02, reset7);
-    const rows = buildNowRows({
-      accounts,
-      projections5,
-      projections7: new Map([['u', p7]]),
-      windows5: new Map(),
-      windows7: new Map(),
-      pools,
-      now: at,
-    });
-    expect(rows[0]).toMatchObject({
-      used5: null,
-      reset5: null,
-      emptyIn5: 36,
-      emptyInWeekly: true,
-      blocked5: false,
-      reset7,
-    });
-    expect(rows[0].used7).toBeCloseTo(0.28, 10);
-    // A weekly window that outlasts its reset reads as a dash.
-    const lasting = buildNowRows({
-      accounts,
-      projections5,
-      projections7: new Map([['u', atProjection('u', 0.72, 0.001, reset7)]]),
-      windows5: new Map(),
-      windows7: new Map(),
-      pools,
-      now: at,
-    });
-    expect(lasting[0].emptyIn5).toBeNull();
 
     const data = buildCapacityChart({
       accounts: [accounts[0]],

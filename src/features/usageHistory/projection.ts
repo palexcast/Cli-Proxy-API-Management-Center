@@ -86,11 +86,6 @@ export interface AccountProjection {
   rate: number;
   /** Reset of the open window, epoch ms; null when no window is open. */
   reset: number | null;
-  hoursToReset: number | null;
-  /** Hours until empty at the current rate, on its own; Infinity when not draining. */
-  emptyInHours: number;
-  /** `max(0, left - rate * hoursToReset)`; null when no window is open. */
-  projectedLeftover: number | null;
   /**
    * 5h only: the weekly reset (r7) while the latest weekly reading is exhausted. Until
    * then the account takes no requests, whatever `left` says; null when not blocked.
@@ -113,16 +108,11 @@ export function projectAccount(
       ? windowAverageRate(samples, kind, now)
       : burnRate(samples, kind, now);
   const reset = open ? current.r : null;
-  const hoursToReset = reset === null ? null : (reset - now) / HOUR_MS;
   return {
     authId,
     left,
     rate,
     reset,
-    hoursToReset,
-    emptyInHours: left !== null && rate > 0 ? left / rate : Number.POSITIVE_INFINITY,
-    projectedLeftover:
-      left === null || hoursToReset === null ? null : Math.max(0, left - rate * hoursToReset),
     blockedUntil: kind === '5h' ? weeklyBlockAt(samples, now) : null,
   };
 }
@@ -175,8 +165,6 @@ export interface PoolSimulation {
   capacity: number;
   /** First step at which the pool total is 0; null when it stays above 0 or is empty. */
   emptyAt: number | null;
-  /** First step at which each account is at 0; null when it never empties. */
-  accountEmptyAt: Map<string, number | null>;
   /** Earliest known refill among the accounts (r7 for a blocked one); null when none. */
   nextRefill: number | null;
   /** Steps where any account's drain changes slope; a chart must draw a point there. */
@@ -308,9 +296,6 @@ export function simulatePool(
     demand,
     capacity: openCapacity,
     emptyAt: projections.length > 0 ? firstEmpty(total) : null,
-    accountEmptyAt: new Map(
-      projections.map((projection, index) => [projection.authId, firstEmpty(rows[index])])
-    ),
     nextRefill: resets.length > 0 ? Math.min(...resets) : null,
     breakpoints,
   };
@@ -325,12 +310,4 @@ export function poolValueAt(pool: PoolSimulation, authId: string, time: number):
   const upper = Math.min(row.length - 1, lower + 1);
   const fraction = Math.min(1, position - lower);
   return row[lower] + (row[upper] - row[lower]) * fraction;
-}
-
-/** Simulated capacity just before `time` (the last step strictly before it). */
-export function poolValueBefore(pool: PoolSimulation, authId: string, time: number): number | null {
-  const row = pool.values.get(authId);
-  if (!row) return null;
-  const step = Math.ceil((time - pool.start) / pool.stepMs) - 1;
-  return row[Math.max(0, Math.min(row.length - 1, step))];
 }
