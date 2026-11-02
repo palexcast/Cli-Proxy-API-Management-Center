@@ -38,6 +38,8 @@ import {
   recordingStart,
   withLead,
   capacity5h,
+  capacity7d,
+  hasFiveHourLimit,
   isActive,
   type AccountInfo,
   type QuotaWindow,
@@ -170,18 +172,24 @@ export function UsageHistoryPage() {
 
   const model = useMemo<Model | null>(() => {
     if (!h5 || !h7) return null;
-    const accounts = buildAccounts(
+    const listed = buildAccounts(
       { accounts: [...h5.accounts, ...h7.accounts], samples: [...h5.samples, ...h7.samples] },
       overrides
     );
     const fine5 = groupSamplesByAccount(h5.samples);
     const samples7 = groupSamplesByAccount(h7.samples);
     const samples5 = new Map(
-      accounts.map(({ authId }) => [
+      listed.map(({ authId }) => [
         authId,
         withLead(fine5.get(authId) ?? [], samples7.get(authId) ?? []),
       ])
     );
+    // The 5h samples carry the weekly lead, so they reach the last 5h reading even when
+    // the 5h range holds only weekly ones.
+    const accounts = listed.map((account) => ({
+      ...account,
+      fiveHourLimit: hasFiveHourLimit(samples5.get(account.authId) ?? []),
+    }));
     const windows5 = new Map<string, QuotaWindow[]>();
     const windows7 = new Map<string, QuotaWindow[]>();
     const projections5 = new Map<string, AccountProjection>();
@@ -307,6 +315,7 @@ export function UsageHistoryPage() {
       to: now,
       points: CHART_POINTS,
       labelDots: (account) => account.plan === 'max',
+      weightOf: capacity7d,
       tail: { horizonMs: TAIL_7D_MS, projections: model.projections7 },
     });
     return { accounts, data, markers: [nowMarker(data)], ticks: axisTicks(data, 'day') };
@@ -466,6 +475,7 @@ export function UsageHistoryPage() {
             <ChartLegend
               accounts={model.accounts}
               activeIds={activeIds(chart5.accounts)}
+              kind="5h"
               showProjected
             />
           </section>
@@ -485,6 +495,7 @@ export function UsageHistoryPage() {
             <ChartLegend
               accounts={model.accounts}
               activeIds={activeIds(chart7.accounts)}
+              kind="7d"
               showProjected
             />
           </section>

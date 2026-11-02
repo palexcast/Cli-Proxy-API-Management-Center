@@ -6,7 +6,7 @@ import type { QuotaHistorySample } from '@/services/api/quotaHistory';
 import {
   buildTimeGrid,
   capacityLeftSeries,
-  isActive,
+  inPool,
   knownUntil,
   type AccountInfo,
   type QuotaWindow,
@@ -25,6 +25,11 @@ export interface ChartSeries {
   values: Array<number | null>;
   /** The account's window size relative to the others; a stacked band's height. */
   weight: number;
+  /**
+   * In this window's pool: false for an account that is disabled or removed, or, on the
+   * 5h chart, has no 5h limit. Its line ends where its last reading stops describing it.
+   */
+  pooled: boolean;
 }
 
 export interface ChartDot {
@@ -114,8 +119,8 @@ function withInstants(grid: number[], instants: number[], start: number, end: nu
  * simulation; without one each account drains at its own rate, refills to 100% at
  * its known reset and keeps draining at the same rate. Before an account's first
  * reading its values are null, and an account with no reading has no tail. An account
- * that left the pool (disabled or removed) keeps its history up to `knownUntil`, then
- * reads null: it has no tail and never refills.
+ * out of the pool (disabled or removed, or without a 5h limit on the 5h chart) keeps its
+ * history up to `knownUntil`, then reads null: it has no tail and never refills.
  */
 export function buildCapacityChart(input: CapacityChartInput): ChartData {
   const { accounts, samples, windows, kind, from, to, points, tail } = input;
@@ -140,13 +145,14 @@ export function buildCapacityChart(input: CapacityChartInput): ChartData {
   const series = accounts.map((account, seriesIndex) => {
     const own = samples.get(account.authId) ?? [];
     const values = capacityLeftSeries(own, kind, past);
-    if (!isActive(account)) {
+    const weight = input.weightOf?.(account) ?? 1;
+    if (!inPool(account, kind)) {
       const until = knownUntil(own, kind);
       const known = values.map((value, index) =>
         until !== null && past[index] < until ? value : null
       );
       known.push(...tailTimes.map(() => null));
-      return { account, values: known, weight: input.weightOf?.(account) ?? 1 };
+      return { account, values: known, weight, pooled: false };
     }
     const projection = tail?.projections.get(account.authId);
     for (let index = past.length; index < times.length; index += 1) {
@@ -161,7 +167,7 @@ export function buildCapacityChart(input: CapacityChartInput): ChartData {
     if (tailSteps > 0 && refill !== null && refill <= end) {
       resetTicks.push({ series: seriesIndex, position: axisPosition(times, refill) });
     }
-    return { account, values, weight: input.weightOf?.(account) ?? 1 };
+    return { account, values, weight, pooled: true };
   });
 
   const dots: ChartDot[] = [];

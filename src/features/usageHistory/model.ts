@@ -7,6 +7,7 @@ import {
   compareSamples,
   type QuotaHistory,
   type QuotaHistoryAccount,
+  type QuotaHistoryPlan,
   type QuotaHistorySample,
 } from '@/services/api/quotaHistory';
 
@@ -15,9 +16,13 @@ export const HOUR_MS = 60 * MINUTE_MS;
 export const DAY_MS = 24 * HOUR_MS;
 
 export type WindowKind = '5h' | '7d';
-/** Plan family: which window limits the account (5h for Team, weekly for Max). */
+/** Plan family: which window limits the account (5h for Team, weekly for Max and Ultra). */
 export type Plan = 'team' | 'max';
-/** Subscription tier: the plan family and the size of the 5h window. */
+/**
+ * Subscription tier: the plan family and the size of its windows. The ids keep
+ * Anthropic's own tier names, which its profile still reports: `max_5x` is the Max plan
+ * and `max_20x` the Ultra plan (renamed from Max 5x and Max 20x on 2026-10-30).
+ */
 export type Tier = 'team_standard' | 'team_premium' | 'max_5x' | 'max_20x';
 
 export const TIERS: readonly Tier[] = ['team_premium', 'team_standard', 'max_20x', 'max_5x'];
@@ -31,15 +36,29 @@ export const TIER_PLAN: Record<Tier, Plan> = {
 
 /**
  * Each tier's 5h allowance in Pro sessions (Pro = 1), as Anthropic publishes it: a
- * Team Standard seat 1.25x Pro, a Premium seat 6.25x, Max 5x and 20x. Utilization is a
- * share of the account's own window, so pooling accounts needs these to compare them.
- * Weekly limits are not published as multiples; the weekly figures stay per account.
+ * Team Standard seat 1.25x Pro, a Premium seat 6.25x, Max 5x. Utilization is a share of
+ * the account's own window, so pooling accounts needs these to compare them. A verified
+ * Ultra account has no 5h limit and leaves the 5h pools (`hasFiveHourLimit`); an
+ * unverified one keeps a temporary limit whose size Anthropic does not publish, so it
+ * keeps the former Max 20x allowance of 20.
  */
 export const TIER_CAPACITY_5H: Record<Tier, number> = {
   team_standard: 1.25,
   team_premium: 6.25,
   max_5x: 5,
   max_20x: 20,
+};
+
+/**
+ * Each tier's weekly allowance in Pro weeks (Pro = 1): Max 5x, Ultra 10x, as Anthropic
+ * publishes them. Team seats have weekly limits without a published multiple and their
+ * responses carry no weekly headers, so they never reach the weekly chart; they weigh 1.
+ */
+export const TIER_CAPACITY_7D: Record<Tier, number> = {
+  team_standard: 1,
+  team_premium: 1,
+  max_5x: 5,
+  max_20x: 10,
 };
 
 export const isTier = (value: unknown): value is Tier =>
@@ -66,16 +85,28 @@ export interface AccountInfo {
   /** Display text: explicit label, else file name, else the auth id. */
   label: string;
   tier: Tier;
+  /** From the account's plan when the proxy has seen its profile, else from its label. */
   defaultTier: Tier;
   /** Derived from `tier`. */
   plan: Plan;
   /** Position in label order; picks the fixed series color. */
   slot: number;
   status: AccountStatus;
+  /** False once its responses show no 5h window (a verified Ultra account). */
+  fiveHourLimit: boolean;
 }
 
 export const isActive = (account: Pick<AccountInfo, 'status'>): boolean =>
   account.status === 'active';
+
+/**
+ * Whether the account takes part in `kind`'s pools and projections: it takes requests,
+ * and for 5h it has a 5h window at all.
+ */
+export const inPool = (
+  account: Pick<AccountInfo, 'status' | 'fiveHourLimit'>,
+  kind: WindowKind
+): boolean => isActive(account) && (kind === '7d' || account.fiveHourLimit);
 
 export type TierOverrides = Record<string, Tier>;
 
@@ -105,13 +136,60 @@ export function accountsWithWeeklyReadings(
   );
 }
 
-/** The tier a label suggests: a Team Premium seat when it says "team", else Max 20x. */
+/** The tier a label suggests: a Team Premium seat when it says "team", else Ultra. */
 export const defaultTierForLabel = (label: string): Tier =>
   /team/i.test(label) ? 'team_premium' : 'max_20x';
+
+/**
+ * The tier an account's plan reports, or null when it does not say. A Team Premium seat
+ * reports `default_claude_max_5x` under a `claude_team` organization; any other Team seat
+ * is taken as Standard (upstream notes Team shares Pro's `default_claude_ai`, which we have
+ * not seen). A personal plan reports `default_claude_max_5x` (Max) or
+ * `default_claude_max_20x` (Ultra).
+ */
+export function tierForPlan(plan: QuotaHistoryPlan | undefined): Tier | null {
+  if (!plan) return null;
+  const tier = plan.rateLimitTier.toLowerCase();
+  if (plan.organizationType.toLowerCase() === 'claude_team') {
+    return tier.endsWith('claude_max_5x') ? 'team_premium' : tier ? 'team_standard' : null;
+  }
+  if (tier.endsWith('claude_max_20x')) return 'max_20x';
+  if (tier.endsWith('claude_max_5x')) return 'max_5x';
+  return null;
+}
 
 /** The account's 5h window in Pro sessions. */
 export const capacity5h = (account: Pick<AccountInfo, 'tier'>): number =>
   TIER_CAPACITY_5H[account.tier];
+
+/** The account's weekly window in Pro weeks. */
+export const capacity7d = (account: Pick<AccountInfo, 'tier'>): number =>
+  TIER_CAPACITY_7D[account.tier];
+
+/**
+ * Whether the account still has a 5h window, from its samples in ascending `t` order.
+ * It has none once a response after its last 5h window ended reports a weekly window that
+ * is not exhausted and no 5h one: a verified Ultra account. A weekly-only response while
+ * the 5h window is open (Anthropic sometimes leaves the 5h headers out) or while the
+ * weekly window is exhausted says nothing, and an account with no weekly-only response
+ * keeps its 5h window. A later 5h reading brings it back.
+ */
+export function hasFiveHourLimit(samples: QuotaHistorySample[]): boolean {
+  let last5: QuotaHistorySample | undefined;
+  let weeklyOnly: QuotaHistorySample | undefined;
+  for (const sample of samples) {
+    if (sample.u5 !== undefined) {
+      last5 = sample;
+      continue;
+    }
+    const weekly = readWindow(sample, '7d');
+    if (weekly && weekly.u < 1 && sample.s7 !== 'rejected') weeklyOnly = sample;
+  }
+  if (!weeklyOnly) return true;
+  if (!last5) return false;
+  if (weeklyOnly.t <= last5.t) return true;
+  return last5.r5 !== undefined && weeklyOnly.t < last5.r5;
+}
 
 /**
  * Every account that is either loaded now or present in the samples, in label
@@ -133,10 +211,10 @@ export function buildAccounts(
     const account = known.get(authId);
     const explicit = account?.label ?? '';
     const label = explicit || account?.name || authId;
-    const defaultTier = defaultTierForLabel(explicit);
+    const defaultTier = tierForPlan(account?.plan) ?? defaultTierForLabel(explicit);
     const tier = overrides[authId] ?? defaultTier;
     const status: AccountStatus = !account ? 'removed' : account.disabled ? 'disabled' : 'active';
-    return { authId, label, tier, defaultTier, plan: TIER_PLAN[tier], status };
+    return { authId, label, tier, defaultTier, plan: TIER_PLAN[tier], status, fiveHourLimit: true };
   });
 
   rows.sort((a, b) => a.label.localeCompare(b.label) || a.authId.localeCompare(b.authId));

@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { isActive, type AccountInfo } from '../model';
+import { inPool, isActive, type AccountInfo, type WindowKind } from '../model';
 import { seriesColor } from '../format';
 import styles from './Controls.module.scss';
 
@@ -52,6 +52,12 @@ export function StatusTag({ account }: { account: AccountInfo }) {
   );
 }
 
+/** The account has no 5h limit (a verified Ultra account): weekly only. */
+export function NoFiveHourTag() {
+  const { t } = useTranslation();
+  return <span className={styles.tag}>{t('usage_history.no_5h_limit')}</span>;
+}
+
 export function AccountName({ account }: { account: AccountInfo }) {
   return (
     <span className={styles.accountName}>
@@ -63,6 +69,7 @@ export function AccountName({ account }: { account: AccountInfo }) {
       <span className={styles.accountLabel}>{account.label}</span>
       <PlanTag account={account} />
       {!isActive(account) && <StatusTag account={account} />}
+      {isActive(account) && !account.fiveHourLimit && <NoFiveHourTag />}
     </span>
   );
 }
@@ -70,6 +77,8 @@ export function AccountName({ account }: { account: AccountInfo }) {
 interface LegendProps {
   accounts: AccountInfo[];
   activeIds: ReadonlySet<string>;
+  /** The chart's window: an account out of its pool is dimmed. */
+  kind: WindowKind;
   showProjected?: boolean;
 }
 
@@ -77,7 +86,7 @@ interface LegendProps {
  * Always-on legend: every account with its plan; out-of-scope accounts and accounts out
  * of the pool are dimmed.
  */
-export function ChartLegend({ accounts, activeIds, showProjected = false }: LegendProps) {
+export function ChartLegend({ accounts, activeIds, kind, showProjected = false }: LegendProps) {
   const { t } = useTranslation();
   return (
     <ul className={styles.legend}>
@@ -85,7 +94,7 @@ export function ChartLegend({ accounts, activeIds, showProjected = false }: Lege
         <li
           key={account.authId}
           className={
-            activeIds.has(account.authId) && isActive(account) ? undefined : styles.legendOff
+            activeIds.has(account.authId) && inPool(account, kind) ? undefined : styles.legendOff
           }
         >
           <AccountName account={account} />
