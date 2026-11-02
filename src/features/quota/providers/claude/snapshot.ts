@@ -26,11 +26,17 @@ const overlayHeaderWindow = (
   key: 'five_hour' | 'seven_day',
   used: number | undefined,
   resetMs: number | undefined,
-  t: TFunction
+  t: TFunction,
+  now: number,
+  /** The stored usage response reports this window as null: the account has none. */
+  usageSaysNone: boolean
 ): ClaudeQuotaWindow[] => {
   if (used === undefined && resetMs === undefined) return windows;
   const meta = CLAUDE_USAGE_WINDOW_KEYS.find((window) => window.key === key)!;
   const existing = windows.find((window) => window.id === meta.id);
+  // An account without a 5h limit (a verified Ultra plan) has a usage response with
+  // five_hour null; its last 5h reading, long reset, would add a 0% 5h row.
+  if (!existing && usageSaysNone && resetMs !== undefined && resetMs <= now) return windows;
   const next: ClaudeQuotaWindow = {
     id: meta.id,
     label: t(meta.labelKey),
@@ -77,8 +83,26 @@ export function buildClaudeSnapshotState(
   const headersAt = account.observedAt;
   const headersNewer = headersAt !== undefined && (usageAt === undefined || headersAt > usageAt);
   if (headersNewer) {
-    windows = overlayHeaderWindow(windows, 'five_hour', account.u5, account.r5, t);
-    windows = overlayHeaderWindow(windows, 'seven_day', account.u7, account.r7, t);
+    const none = (key: 'five_hour' | 'seven_day') =>
+      payload !== null && (payload as Record<string, unknown>)[key] === null;
+    windows = overlayHeaderWindow(
+      windows,
+      'five_hour',
+      account.u5,
+      account.r5,
+      t,
+      now,
+      none('five_hour')
+    );
+    windows = overlayHeaderWindow(
+      windows,
+      'seven_day',
+      account.u7,
+      account.r7,
+      t,
+      now,
+      none('seven_day')
+    );
   }
   windows = windows.map((window) =>
     typeof window.resetAtMs === 'number' && window.resetAtMs <= now

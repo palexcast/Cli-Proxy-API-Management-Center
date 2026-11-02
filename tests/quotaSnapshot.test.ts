@@ -250,6 +250,42 @@ describe('Claude snapshot state', () => {
     expect(windowById(fromUsage, 'seven-day')?.resetAtMs).toBe(Date.parse('2026-10-15T09:00:00Z'));
   });
 
+  test('an account without a 5h window gets no 5h row from an old reading', () => {
+    // A verified Ultra account: the usage response has five_hour null, and the last 5h
+    // reading (Oct 31) reset long before the newer weekly-only headers.
+    const ultraUsage = {
+      five_hour: null,
+      seven_day: { utilization: 28, resets_at: '2026-11-07T13:59:59+00:00' },
+    };
+    const reading = {
+      u5: 1,
+      r5: Date.parse('2026-10-31T21:50:00Z'),
+      u7: 0.29,
+      r7: Date.parse('2026-11-07T14:00:00Z'),
+    };
+    const now = Date.parse('2026-11-02T12:00:00Z');
+    const state = buildClaudeSnapshotState(
+      account({
+        observedAt: Date.parse('2026-11-02T11:56:00Z'),
+        refreshedAt: Date.parse('2026-11-02T11:04:56Z'),
+        usage: ultraUsage,
+        ...reading,
+      }),
+      t,
+      now
+    );
+    expect(windowById(state, 'five-hour')).toBeUndefined();
+    expect(windowById(state, 'seven-day')).toMatchObject({ usedPercent: 29 });
+
+    // Without a usage response saying so, an ended reading still shows as refilled.
+    const headersOnly = buildClaudeSnapshotState(
+      account({ observedAt: Date.parse('2026-11-02T11:56:00Z'), ...reading }),
+      t,
+      now
+    );
+    expect(windowById(headersOnly, 'five-hour')).toMatchObject({ usedPercent: 0, resetAtMs: null });
+  });
+
   test('nothing known builds nothing', () => {
     expect(buildClaudeSnapshotState(account(), t, NOW)).toBeNull();
     expect(buildClaudeSnapshotState(account({ observedAt: NOW, s5: 'allowed' }), t, NOW)).toBe(
