@@ -149,6 +149,10 @@ export function UsageHistoryPage() {
     };
   }, [language]);
   const formatClock = useCallback((time: number) => formatters.clock.format(time), [formatters]);
+  const formatDayClock = useCallback(
+    (time: number) => formatters.dayClock.format(time),
+    [formatters]
+  );
   const formatTime = useCallback((time: number) => formatters.full.format(time), [formatters]);
   const formatDuration = useCallback(
     (ms: number) => {
@@ -220,9 +224,20 @@ export function UsageHistoryPage() {
     [model]
   );
 
-  /** Pooled 5h simulations: the Team pool for the tile, and the chart's scope. */
+  /** Routed simulations: the Team 5h pool for its tile, the 5h chart's scope, the weekly pool. */
   const pools = useMemo(
-    () => (model ? buildPools(model.accounts, model.projections5, scope5, now, TAIL_5H_MS) : null),
+    () =>
+      model
+        ? buildPools({
+            accounts: model.accounts,
+            projections5: model.projections5,
+            projections7: model.projections7,
+            scope: scope5,
+            now,
+            horizon5Ms: TAIL_5H_MS,
+            horizon7Ms: TAIL_7D_MS,
+          })
+        : null,
     [model, scope5, now]
   );
 
@@ -300,7 +315,7 @@ export function UsageHistoryPage() {
   ]);
 
   const chart7 = useMemo(() => {
-    if (!model) return null;
+    if (!model || !pools) return null;
     // Only accounts with a weekly reading in range: a window at 0% is drawn, an
     // account whose responses never carried the weekly headers is left out.
     const accounts = accountsWithWeeklyReadings(model.accounts, model.samples7);
@@ -314,10 +329,22 @@ export function UsageHistoryPage() {
       points: CHART_POINTS,
       labelDots: (account) => account.plan === 'max',
       weightOf: capacity7d,
-      tail: { horizonMs: TAIL_7D_MS, projections: model.projections7 },
+      tail: { horizonMs: TAIL_7D_MS, projections: model.projections7, pool: pools.weekly },
     });
-    return { accounts, data, markers: [nowMarker(data)], ticks: axisTicks(data, 'day') };
-  }, [model, now, span7, axisTicks, nowMarker]);
+    const markers = [nowMarker(data)];
+    const { emptyAt } = pools.weekly;
+    if (emptyAt !== null) {
+      markers.push({
+        position: axisPosition(data.times, emptyAt),
+        tone: 'runway',
+        label: t('usage_history.runway_marker', {
+          duration: formatDuration(emptyAt - now),
+          time: formatDayClock(emptyAt),
+        }),
+      });
+    }
+    return { accounts, data, markers, ticks: axisTicks(data, 'day') };
+  }, [model, pools, now, span7, axisTicks, nowMarker, t, formatDuration, formatDayClock]);
 
   /* ---------- render ---------- */
 
@@ -426,10 +453,18 @@ export function UsageHistoryPage() {
         <>
           <section className={styles.tiles} aria-label={t('usage_history.tiles_label')}>
             <RunwayTile
+              kind="5h"
               pool={pools.team}
               now={now}
               formatDuration={formatDuration}
               formatClock={formatClock}
+            />
+            <RunwayTile
+              kind="7d"
+              pool={pools.weekly}
+              now={now}
+              formatDuration={formatDuration}
+              formatClock={formatDayClock}
             />
           </section>
 
