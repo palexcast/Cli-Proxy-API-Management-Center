@@ -29,8 +29,11 @@ import {
   MIN_WEEKLY_ELAPSED_MS,
   projectAccount,
   projectedLeftAt,
-  simulatePool,
+  emptySpans,
+  poolOf,
+  simulateRouting,
   type AccountProjection,
+  type RoutedAccount,
 } from '../src/features/usageHistory/projection';
 import {
   INITIAL_HISTORY_STATE,
@@ -40,7 +43,7 @@ import {
 } from '../src/features/usageHistory/historyCache';
 import type { QuotaHistory, QuotaHistorySample } from '../src/services/api/quotaHistory';
 import { NOW, SINCE, quotaHistoryResponse } from './fixtures/quotaHistory';
-import { accountEmptyAt } from './helpers/usageHistoryPool';
+import { accountEmptyAt, simulate } from './helpers/usageHistoryPool';
 
 const history = normalizeQuotaHistory(quotaHistoryResponse);
 const byAccount = groupSamplesByAccount(history.samples);
@@ -80,8 +83,9 @@ describe('normalizeQuotaHistory', () => {
       accounts: [
         { auth_id: '' },
         'x',
-        { auth_id: 'a', label: '<b>x</b>', provider: 'Claude', disabled: 'true' },
-        { auth_id: 'b', provider: 'claude', disabled: true },
+        { auth_id: 'a', label: '<b>x</b>', provider: 'Claude', disabled: 'true', priority: '11' },
+        { auth_id: 'b', provider: 'claude', disabled: true, priority: 10 },
+        { auth_id: 'c', provider: 'claude', priority: 1.5 },
       ],
       samples: [
         { t: 'not a time', auth_id: 'a', u5: 0.1 },
@@ -92,8 +96,16 @@ describe('normalizeQuotaHistory', () => {
       truncated: 'yes',
     });
     expect(parsed.accounts).toEqual([
-      { authId: 'a', name: '', label: '<b>x</b>', provider: 'claude', disabled: false },
-      { authId: 'b', name: '', label: '', provider: 'claude', disabled: true },
+      {
+        authId: 'a',
+        name: '',
+        label: '<b>x</b>',
+        provider: 'claude',
+        disabled: false,
+        priority: 0,
+      },
+      { authId: 'b', name: '', label: '', provider: 'claude', disabled: true, priority: 10 },
+      { authId: 'c', name: '', label: '', provider: 'claude', disabled: false, priority: 0 },
     ]);
     expect(parsed.samples).toEqual([
       { t: at('2026-10-27T10:00:00Z'), authId: 'a', u5: 0.3, r5: 1761580800000, s5: 'allowed' },
@@ -145,6 +157,7 @@ describe('buildAccounts', () => {
         slot: 0,
         status: 'removed',
         fiveHourLimit: true,
+        priority: 0,
       },
       {
         authId: 'x',
@@ -154,6 +167,7 @@ describe('buildAccounts', () => {
         slot: 1,
         status: 'active',
         fiveHourLimit: true,
+        priority: 0,
       },
     ]);
   });
@@ -440,11 +454,10 @@ describe('no data and weekly blocks', () => {
 describe('pooled 5h simulation', () => {
   const FIVE_H = 5 * HOUR_MS;
 
-  test('spreads the combined burn over accounts with capacity, then onto idle ones', () => {
-    const pool = simulatePool(
+  test("a dry account's load moves to the others, idle ones included", () => {
+    const pool = simulate(
       [projection('a', 0.5, 1, NOW + 4 * HOUR_MS), projection('b', 0.9, 0, NOW + 4 * HOUR_MS)],
-      NOW,
-      FIVE_H
+      { now: NOW, horizonMs: FIVE_H }
     );
     expect(pool.demand).toBe(1);
     expect(pool.total).toHaveLength(301);
@@ -454,19 +467,18 @@ describe('pooled 5h simulation', () => {
     expect(pool.emptyAt).toBe(NOW + 1.4 * HOUR_MS);
     expect(pool.total[83]).toBeGreaterThan(0);
     expect(pool.total[84]).toBe(0);
-    // Both refill at 4h and drain again at the same combined rate.
+    // Both refill at 4h; the load that waited lands on both evenly, 0.5/h each.
     expect(pool.total[240]).toBe(2);
-    expect(pool.values.get('a')?.[300]).toBeCloseTo(0, 10);
-    expect(pool.values.get('b')?.[300]).toBeCloseTo(1, 10);
+    expect(pool.values.get('a')?.[300]).toBeCloseTo(0.5, 10);
+    expect(pool.values.get('b')?.[300]).toBeCloseTo(0.5, 10);
     expect(pool.breakpoints).toContain(NOW + 30 * 60 * 1000);
     expect(pool.breakpoints).toContain(NOW + 1.4 * HOUR_MS);
   });
 
   test('splits equally when every account left measures no burn', () => {
-    const pool = simulatePool(
+    const pool = simulate(
       [projection('a', 0.2, 0.3, null), projection('b', 1, 0, null), projection('c', 1, 0, null)],
-      NOW,
-      FIVE_H
+      { now: NOW, horizonMs: FIVE_H }
     );
     // 'a' is dry at 40 minutes; 'b' and 'c' then take 0.15/h each.
     expect(accountEmptyAt(pool, 'a')).toBe(NOW + 40 * 60 * 1000);
@@ -484,12 +496,11 @@ describe('pooled 5h simulation', () => {
       ['a', 1],
       ['m', 3],
     ]);
-    const pool = simulatePool(
-      [projection('a', 0.5, 1, null), projection('m', 1, 0.5, null)],
-      NOW,
-      FIVE_H,
-      (authId) => size.get(authId) ?? 1
-    );
+    const pool = simulate([projection('a', 0.5, 1, null), projection('m', 1, 0.5, null)], {
+      now: NOW,
+      horizonMs: FIVE_H,
+      size: (authId) => size.get(authId) ?? 1,
+    });
     expect(pool.demand).toBe(2.5);
     expect(pool.capacity).toBe(4);
     // Each takes its own measured share until 'a' is dry at 30 minutes.
@@ -503,11 +514,9 @@ describe('pooled 5h simulation', () => {
 
   test('splits equally in absolute capacity when every account left measures no burn', () => {
     const size = new Map([['c', 4]]);
-    const pool = simulatePool(
+    const pool = simulate(
       [projection('a', 0.2, 0.3, null), projection('b', 1, 0, null), projection('c', 1, 0, null)],
-      NOW,
-      FIVE_H,
-      (authId) => size.get(authId) ?? 1
+      { now: NOW, horizonMs: FIVE_H, size: (authId) => size.get(authId) ?? 1 }
     );
     // 'a' is dry at 40 minutes; 'b' and 'c' then take 0.15 units/h each, which is
     // 0.15/h of 'b' but only 0.0375/h of 'c', four times the size.
@@ -521,7 +530,7 @@ describe('pooled 5h simulation', () => {
       projectAccount(id, samplesOf(id), '5h', NOW)
     );
     // 1.5 left at 0.5/h would be dry at 3h, but all three refill at 2h.
-    const pool = simulatePool(trio, NOW, FIVE_H);
+    const pool = simulate(trio, { now: NOW, horizonMs: FIVE_H });
     expect(pool.emptyAt).toBeNull();
     expect(pool.nextRefill).toBe(NOW + 2 * HOUR_MS);
     // James: 0.25 left at the fitted ~0.25/h, dry after about an hour.
@@ -534,13 +543,16 @@ describe('pooled 5h simulation', () => {
 
   test('an account with no reading is not pooled: no capacity, no demand', () => {
     const unseen = { ...projection('n', 1, 0.5, null), left: null };
-    const pool = simulatePool([projection('a', 0.5, 1, NOW + 4 * HOUR_MS), unseen], NOW, FIVE_H);
+    const pool = simulate([projection('a', 0.5, 1, NOW + 4 * HOUR_MS), unseen], {
+      now: NOW,
+      horizonMs: FIVE_H,
+    });
     expect(pool.values.has('n')).toBe(false);
     expect(accountEmptyAt(pool, 'n')).toBeUndefined();
     expect(pool.demand).toBe(1);
     expect(pool.total[0]).toBe(0.5);
     expect(pool.emptyAt).toBe(NOW + 30 * 60 * 1000);
-    expect(simulatePool([unseen], NOW, FIVE_H).emptyAt).toBeNull();
+    expect(simulate([unseen], { now: NOW, horizonMs: FIVE_H }).emptyAt).toBeNull();
   });
 
   test('a weekly-blocked account takes nothing and rejoins at r7 with its 5h capacity', () => {
@@ -549,7 +561,10 @@ describe('pooled 5h simulation', () => {
       expect(Math.abs((time ?? 0) - expected)).toBeLessThanOrEqual(60 * 1000);
     // 'w' holds 0.8 of its 5h window (u7 = 1); 'a' carries 0.6/h with 1.0 left.
     const blocked = { ...projection('w', 0.8, 0, NOW + 4 * HOUR_MS), blockedUntil: r7 };
-    const pool = simulatePool([projection('a', 1, 0.6, null), blocked], NOW, FIVE_H);
+    const pool = simulate([projection('a', 1, 0.6, null), blocked], {
+      now: NOW,
+      horizonMs: FIVE_H,
+    });
     const w = pool.values.get('w') ?? [];
     expect(w[0]).toBe(0);
     expect(pool.total[0]).toBe(1);
@@ -568,11 +583,10 @@ describe('pooled 5h simulation', () => {
     expect(pool.nextRefill).toBe(r7);
 
     // Its 5h window resets during the block: it rejoins full.
-    const refilled = simulatePool(
-      [{ ...projection('w', 0.8, 0, NOW + HOUR_MS), blockedUntil: r7 }],
-      NOW,
-      FIVE_H
-    );
+    const refilled = simulate([{ ...projection('w', 0.8, 0, NOW + HOUR_MS), blockedUntil: r7 }], {
+      now: NOW,
+      horizonMs: FIVE_H,
+    });
     const row = refilled.values.get('w') ?? [];
     expect(row[60]).toBe(0);
     expect(row[119]).toBe(0);
@@ -580,9 +594,165 @@ describe('pooled 5h simulation', () => {
   });
 
   test('an empty scope never runs dry and an exhausted one is dry now', () => {
-    expect(simulatePool([], NOW, FIVE_H).emptyAt).toBeNull();
-    const dry = simulatePool([projection('a', 0, 0.2, NOW + HOUR_MS)], NOW, FIVE_H);
+    expect(simulate([], { now: NOW, horizonMs: FIVE_H }).emptyAt).toBeNull();
+    const dry = simulate([projection('a', 0, 0.2, NOW + HOUR_MS)], { now: NOW, horizonMs: FIVE_H });
     expect(dry.emptyAt).toBe(NOW);
+  });
+});
+
+describe('routing simulation', () => {
+  const FIVE_H = 5 * HOUR_MS;
+  const MIN = 60 * 1000;
+  const WEEK = 7 * DAY_MS;
+
+  test('failover goes to the highest priority that can take requests', () => {
+    const priority = new Map([['hi', 11]]);
+    const pool = simulate(
+      [
+        projection('hi', 1, 0, null),
+        projection('lo1', 0.25, 0.5, null),
+        projection('lo2', 1, 0, null),
+      ],
+      { now: NOW, horizonMs: FIVE_H, priority: (authId) => priority.get(authId) ?? 10 }
+    );
+    // 'lo1' is dry at 30 minutes; its 0.5/h goes to 'hi' alone, never to 'lo2'.
+    expect(accountEmptyAt(pool, 'lo1')).toBe(NOW + 30 * MIN);
+    expect(pool.values.get('hi')?.[90]).toBeCloseTo(0.5, 10);
+    expect(pool.values.get('lo2')?.[149]).toBe(1);
+    // 'hi' is dry at 150 minutes; only then does the load reach 'lo2', dry at 270.
+    expect(accountEmptyAt(pool, 'hi')).toBe(NOW + 150 * MIN);
+    expect(accountEmptyAt(pool, 'lo2')).toBe(NOW + 270 * MIN);
+    expect(pool.emptyAt).toBe(NOW + 270 * MIN);
+  });
+
+  test('a refilled account gets no sessions back until another one runs dry', () => {
+    const pool = simulate([projection('a', 0.1, 1, NOW + 30 * MIN), projection('b', 1, 0, null)], {
+      now: NOW,
+      horizonMs: FIVE_H,
+    });
+    const a = pool.values.get('a') ?? [];
+    const b = pool.values.get('b') ?? [];
+    // 'a' is dry at 6 minutes and 'b' takes its sessions; 'a' refills at 30 and stays full.
+    expect(accountEmptyAt(pool, 'a')).toBe(NOW + 6 * MIN);
+    expect(a[30]).toBe(1);
+    expect(a[60]).toBe(1);
+    expect(b[60]).toBeCloseTo(1 - 54 / 60, 10);
+    // 'b' is dry at 66 minutes; the sessions fail over to 'a', dry 60 minutes later.
+    expect(accountEmptyAt(pool, 'b')).toBe(NOW + 66 * MIN);
+    expect(a[96]).toBeCloseTo(0.5, 10);
+    expect(pool.emptyAt).toBe(NOW + 126 * MIN);
+  });
+
+  test('an account without the window takes its share of failover, which leaves the pool', () => {
+    const pool = simulate([projection('a', 0.1, 0.6, null), projection('b', 1, 0, null)], {
+      now: NOW,
+      horizonMs: FIVE_H,
+      // From 70 minutes the sink cannot take requests (its weekly window runs dry).
+      sinks: [{ authId: 'u', blocks: [{ from: NOW + 70 * MIN, until: NOW + WEEK }] }],
+    });
+    expect(pool.values.has('u')).toBe(false);
+    expect(pool.demand).toBeCloseTo(0.6, 10);
+    // 'a' is dry at 10 minutes: 0.3/h goes to 'b', 0.3/h to the sink.
+    expect(accountEmptyAt(pool, 'a')).toBe(NOW + 10 * MIN);
+    expect(pool.values.get('b')?.[70]).toBeCloseTo(0.7, 10);
+    // At 70 the sink's share fails over to 'b' as well: 0.6/h.
+    expect(pool.values.get('b')?.[130]).toBeCloseTo(0.1, 10);
+    expect(accountEmptyAt(pool, 'b')).toBe(NOW + 140 * MIN);
+  });
+
+  test('load that finds no account waits and lands on the first one to refill', () => {
+    const pool = simulate(
+      [projection('a', 0.1, 0.6, NOW + 2 * HOUR_MS), projection('b', 0.1, 0, NOW + 3 * HOUR_MS)],
+      { now: NOW, horizonMs: FIVE_H }
+    );
+    const a = pool.values.get('a') ?? [];
+    const b = pool.values.get('b') ?? [];
+    // 'a' is dry at 10 minutes, 'b' at 20: the pool is empty until 'a' refills at 2h.
+    expect(pool.emptyAt).toBe(NOW + 20 * MIN);
+    expect(pool.total[119]).toBe(0);
+    // 'a' then carries all 0.6/h; 'b' refills at 3h and takes nothing until 'a' is dry.
+    expect(a[180]).toBeCloseTo(0.4, 10);
+    expect(b[180]).toBe(1);
+    expect(a.findIndex((value, step) => step > 120 && value <= 1e-9)).toBe(220);
+    expect(b[280]).toBeCloseTo(0.4, 10);
+  });
+
+  test('when one of two accounts runs dry the other burns at the combined rate', () => {
+    // Two Max accounts each burn 2% of their week per hour; 'x' has 10% left.
+    const pool = simulate([projection('x', 0.1, 0.02, null), projection('y', 1, 0.02, null)], {
+      now: NOW,
+      horizonMs: WEEK,
+      kind: '7d',
+      size: () => 5,
+    });
+    expect(pool.stepMs).toBe(5 * MIN);
+    const y = pool.values.get('y') ?? [];
+    expect(accountEmptyAt(pool, 'x')).toBe(NOW + 5 * HOUR_MS);
+    expect(y[60]).toBeCloseTo(0.9, 10);
+    // From then on 'y' carries both: 4% per hour, not 2%.
+    expect(y[120]).toBeCloseTo(0.7, 10);
+    expect(pool.emptyAt).toBe(NOW + (5 + 22.5) * HOUR_MS);
+  });
+
+  test('emptySpans reads when a simulated window is dry, up to its refill', () => {
+    const routed: RoutedAccount[] = [
+      {
+        authId: 'm',
+        priority: 0,
+        size: 5,
+        projection: projection('m', 0.025, 0.005, NOW + 2 * DAY_MS),
+        blocks: [],
+      },
+    ];
+    const run = simulateRouting(routed, '7d', NOW, WEEK);
+    expect(emptySpans(run, 'm')).toEqual([{ from: NOW + 5 * HOUR_MS, until: NOW + 2 * DAY_MS }]);
+    expect(emptySpans(run, 'unknown')).toEqual([]);
+    expect(poolOf(run, ['m', 'unknown']).values.has('unknown')).toBe(false);
+  });
+
+  test('a weekly window projected dry blocks the account in the 5h pool', () => {
+    const account = (authId: string, tier: AccountInfo['tier'], priority: number): AccountInfo => ({
+      authId,
+      label: authId,
+      tier,
+      plan: tier.startsWith('team') ? 'team' : 'max',
+      slot: 0,
+      status: 'active',
+      fiveHourLimit: true,
+      priority,
+    });
+    // Max (priority 11) burns 1 Pro session per 5h-hour and has 0.05 Pro weeks left at 0.02
+    // per hour: its weekly window is dry at 2.5h. Team 't1' burns 1 session/h, 't2' is idle.
+    const reset5 = NOW + 4 * HOUR_MS;
+    const pools = buildPools({
+      accounts: [
+        account('max', 'max_5x', 11),
+        account('t1', 'team_premium', 10),
+        account('t2', 'team_premium', 10),
+      ],
+      projections5: new Map([
+        ['max', projection('max', 0.8, 0.2, reset5)],
+        ['t1', projection('t1', 0.5, 0.16, reset5)],
+        ['t2', projection('t2', 1, 0, reset5)],
+      ]),
+      projections7: new Map([['max', projection('max', 0.01, 0.004, NOW + 3 * DAY_MS)]]),
+      scope: 'all',
+      now: NOW,
+      horizon5Ms: FIVE_H,
+      horizon7Ms: WEEK,
+    });
+    // The Team seats here have no weekly readings: they take the weekly failover, out of the pool.
+    expect([...pools.weekly.values.keys()]).toEqual(['max']);
+    expect(pools.weekly.emptyAt).toBe(NOW + 150 * MIN);
+    expect(pools.weekly.nextRefill).toBe(NOW + 3 * DAY_MS);
+    // In the 5h run 'max' takes no requests from then on, whatever its 5h window holds.
+    const max = pools.chart.values.get('max') ?? [];
+    expect(max[149]).toBeCloseTo(0.8 - (0.2 * 149) / 60, 10);
+    expect(max[150]).toBe(0);
+    expect(max[300]).toBe(0);
+    // Its 1 session/h splits over the Team seats; 't1' holds 0.625 at 1.5/h, dry at 175.
+    expect(accountEmptyAt(pools.chart, 't1')).toBe(NOW + 175 * MIN);
+    expect(pools.team.emptyAt).toBeNull();
   });
 });
 
@@ -596,6 +766,7 @@ describe('accountsWithWeeklyReadings', () => {
       slot: 0,
       status: 'active',
       fiveHourLimit: true,
+      priority: 0,
     });
     const samples = new Map<string, QuotaHistorySample[]>([
       ['max', [{ t: NOW, authId: 'max', u5: 0.2, r5: NOW + HOUR_MS, u7: 0, r7: NOW + DAY_MS }]],
@@ -825,20 +996,28 @@ describe('accounts out of the pool', () => {
     slot: 0,
     status,
     fiveHourLimit: true,
+    priority: 0,
   });
 
   test('buildAccounts reads disabled from the payload and removed from samples only', () => {
     const accounts = buildAccounts({
       accounts: [
-        { authId: 'on', name: 'on.json', label: 'On', provider: 'claude', disabled: false },
+        {
+          authId: 'on',
+          name: 'on.json',
+          label: 'On',
+          provider: 'claude',
+          disabled: false,
+          priority: 11,
+        },
         { authId: 'off', name: 'off.json', label: 'Off', provider: 'claude', disabled: true },
       ],
       samples: [{ t: 1, authId: 'gone' }],
     });
-    expect(accounts.map((entry) => [entry.authId, entry.status])).toEqual([
-      ['gone', 'removed'],
-      ['off', 'disabled'],
-      ['on', 'active'],
+    expect(accounts.map((entry) => [entry.authId, entry.status, entry.priority])).toEqual([
+      ['gone', 'removed', 0],
+      ['off', 'disabled', 0],
+      ['on', 'active', 11],
     ]);
   });
 
@@ -848,7 +1027,15 @@ describe('accounts out of the pool', () => {
       ['on', projection('on', 1, 0.5, null)],
       ['off', projection('off', 1, 0, null)],
     ]);
-    const pools = buildPools(accounts, projections5, 'all', NOW, FIVE_H);
+    const pools = buildPools({
+      accounts,
+      projections5,
+      projections7: new Map(),
+      scope: 'all',
+      now: NOW,
+      horizon5Ms: FIVE_H,
+      horizon7Ms: 7 * DAY_MS,
+    });
     expect(pools.chart.values.has('on')).toBe(true);
     expect(pools.chart.values.has('off')).toBe(false);
     // 'on' alone drains at 0.5/h: dry in 2h, which 'off' would otherwise have stretched.
@@ -1027,6 +1214,7 @@ describe('accounts without a 5h limit', () => {
       slot: 0,
       status: 'active',
       fiveHourLimit,
+      priority: 0,
     });
     const accounts = [account('u', 'max_20x', false), account('t', 'team_premium', true)];
     expect(accounts.map((entry) => [inPool(entry, '5h'), inPool(entry, '7d')])).toEqual([
@@ -1050,7 +1238,15 @@ describe('accounts without a 5h limit', () => {
       ['u', { ...atProjection('u', 1, 0, at + HOUR_MS), reset: null }],
       ['t', atProjection('t', 0.5, 0.1, at + 3 * HOUR_MS)],
     ]);
-    const pools = buildPools(accounts, projections5, 'all', at, 5 * HOUR_MS);
+    const pools = buildPools({
+      accounts,
+      projections5,
+      projections7: new Map(),
+      scope: 'all',
+      now: at,
+      horizon5Ms: 5 * HOUR_MS,
+      horizon7Ms: 7 * DAY_MS,
+    });
     for (const pool of [pools.team, pools.chart]) expect(pool.values.has('u')).toBe(false);
     expect(pools.chart.capacity).toBe(TIER_CAPACITY_5H.team_premium);
 

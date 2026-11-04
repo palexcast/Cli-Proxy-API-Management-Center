@@ -49,12 +49,19 @@ export const TIER_CAPACITY_5H: Record<Tier, number> = {
 
 /**
  * Each tier's weekly allowance in Pro weeks (Pro = 1): Max 5x, Ultra 10x, as Anthropic
- * publishes them. Team seats have weekly limits without a published multiple and their
- * responses carry no weekly headers, so they never reach the weekly chart; they weigh 1.
+ * publishes them. For Team seats Anthropic publishes only the per-session multiple, so
+ * the Premium week is measured: over stretches where the proxy saw both windows unchanged,
+ * four Premium seats used 9.66 full 5h windows per full week (2026-11-02 to 11-04) and two
+ * Max 20x accounts 6.97 (2026-10-27 to 10-31, before the rename). With Max 20x at 20x Pro
+ * per 5h and 10x per week, that makes a Premium week 10 * (6.25 / 20) * (9.66 / 6.97) =
+ * 4.3 Pro weeks (4.2 to 4.5 across the accounts); it is set to 5, the nearest round
+ * multiple, by the operator's choice. A Standard seat is a fifth of a Premium one, as
+ * Anthropic sizes the two. These sizes weigh the weekly chart and set how much of another
+ * account's week a Team seat's load takes when it fails over in the weekly simulation.
  */
 export const TIER_CAPACITY_7D: Record<Tier, number> = {
   team_standard: 1,
-  team_premium: 1,
+  team_premium: 5,
   max_5x: 5,
   max_20x: 10,
 };
@@ -88,6 +95,8 @@ export interface AccountInfo {
   status: AccountStatus;
   /** False once its responses show no 5h window (a verified Ultra account). */
   fiveHourLimit: boolean;
+  /** Routing priority; the proxy fails over to the highest that can take requests. */
+  priority: number;
 }
 
 export const isActive = (account: Pick<AccountInfo, 'status'>): boolean =>
@@ -202,7 +211,8 @@ export function buildAccounts(history: Pick<QuotaHistory, 'accounts' | 'samples'
     const label = explicit || account?.name || authId;
     const tier = tierForPlan(account?.plan) ?? defaultTierForLabel(explicit);
     const status: AccountStatus = !account ? 'removed' : account.disabled ? 'disabled' : 'active';
-    return { authId, label, tier, plan: TIER_PLAN[tier], status, fiveHourLimit: true };
+    const priority = account?.priority ?? 0;
+    return { authId, label, tier, plan: TIER_PLAN[tier], status, fiveHourLimit: true, priority };
   });
 
   rows.sort((a, b) => a.label.localeCompare(b.label) || a.authId.localeCompare(b.authId));

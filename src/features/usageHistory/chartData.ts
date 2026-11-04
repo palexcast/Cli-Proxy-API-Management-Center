@@ -83,8 +83,8 @@ export interface ProjectedTail {
   /** Per account: rate (30-minute slope for 5h, window average for 7d) and next reset. */
   projections: Map<string, AccountProjection>;
   /**
-   * 5h: the pooled simulation the tail draws. Its breakpoints join the grid so the
-   * drawn lines bend, empty and refill where the simulation does.
+   * The routed simulation the tail draws. Its breakpoints join the grid so the drawn
+   * lines bend, empty and refill where the simulation does.
    */
   pool?: PoolSimulation;
 }
@@ -115,7 +115,7 @@ function withInstants(grid: number[], instants: number[], start: number, end: nu
 
 /**
  * Observed capacity left per account with a dot at the last value before each reset,
- * optionally followed by a projected tail. With a pool the tail is the pooled
+ * optionally followed by a projected tail. With a pool the tail is the routed
  * simulation; without one each account drains at its own rate, refills to 100% at
  * its known reset and keeps draining at the same rate. Before an account's first
  * reading its values are null, and an account with no reading has no tail. An account

@@ -22,6 +22,11 @@ export interface QuotaHistoryAccount {
   provider: string;
   /** Switched off by the operator: still loaded, takes no requests. */
   disabled: boolean;
+  /**
+   * Routing priority: the proxy hands cold sessions and failover to the highest priority
+   * that can take them. 0 when unset or from a proxy that does not send it.
+   */
+  priority?: number;
   /** Absent until the proxy has seen the account's profile. */
   plan?: QuotaHistoryPlan;
 }
@@ -106,6 +111,8 @@ const normalizeAccount = (value: unknown): QuotaHistoryAccount | null => {
     label: readText(value.label),
     provider: readText(value.provider).toLowerCase(),
     disabled: value.disabled === true,
+    priority:
+      typeof value.priority === 'number' && Number.isInteger(value.priority) ? value.priority : 0,
     ...readPlan(value.plan),
   };
 };

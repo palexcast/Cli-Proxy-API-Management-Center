@@ -7,9 +7,10 @@
  * during use, so a slope through them would overstate an account that burst and went
  * idle, and minutes into a window a few percent would read as a week's burn per day).
  *
- * The weekly tail drains each account on its own and refills at each known reset.
- * The 5h tail models the pool the way the proxy routes: `simulatePool`. Rates are shares
- * of the account's own window, so the pool converts them through each account's capacity.
+ * Both tails come from `simulateRouting`, which moves load between accounts the way the
+ * proxy routes it (round-robin with session affinity and credential priority). Rates are
+ * shares of the account's own window, so the simulation converts them through each
+ * account's capacity.
  *
  * An account with no reading yet has no projection value (`left` is null): it is not
  * drawn and not pooled. A weekly-exhausted account has no 5h capacity until its r7.
@@ -142,163 +143,288 @@ export function projectedLeftAt(
 /** Capacity below this is treated as empty, so float residue does not keep an account alive. */
 const EMPTY_EPSILON = 1e-9;
 export const POOL_STEP_MS = MINUTE_MS;
+/** The weekly simulation's step: a week in 5-minute steps. */
+export const WEEKLY_STEP_MS = 5 * MINUTE_MS;
+
+/** A span during which an account takes no requests, whatever its capacity. */
+export interface BlockInterval {
+  from: number;
+  until: number;
+}
+
+/** One account as the routing simulation sees it. */
+export interface RoutedAccount {
+  authId: string;
+  /** Credential priority: cold sessions and failover go to the highest that can take them. */
+  priority: number;
+  /** Its window in absolute units: Pro sessions for 5h, Pro weeks for 7d. */
+  size: number;
+  /**
+   * Its projection for the simulated window, or null when it has no such window: on the
+   * 5h run an account without a 5h limit, on the weekly run one whose responses never
+   * carried weekly headers. Such an account takes its share of failover while it can take
+   * requests and never runs dry; what it carries is not counted in the pool. Its own load
+   * cannot be read in this window's units, so it is not counted either.
+   */
+  projection: AccountProjection | null;
+  /** When it takes no requests whatever its capacity: weekly blocks, now or projected. */
+  blocks: BlockInterval[];
+}
+
+export interface RoutingRun {
+  /** Simulation start (now), epoch ms; values sit at `start + k * stepMs`. */
+  start: number;
+  stepMs: number;
+  /**
+   * Usable capacity left per pool member (an account with this window and a reading) per
+   * step, refills applied; 0 while blocked.
+   */
+  values: Map<string, number[]>;
+  /** Each member's measured load at the start, in absolute units per hour. */
+  draw: Map<string, number>;
+  size: Map<string, number>;
+  /** Members blocked at the start: they cannot take requests now. */
+  blockedNow: Set<string>;
+  /** Each member's next refill: the end of the block it is in now, else its reset. */
+  refill: Map<string, number | null>;
+}
 
 export interface PoolSimulation {
   /** Simulation start (now), epoch ms; values sit at `start + k * stepMs`. */
   start: number;
   stepMs: number;
-  /**
-   * Usable capacity left per pooled account per step, refills applied; 0 while the
-   * account is weekly-blocked. Accounts with no reading are not pooled.
-   */
+  /** Usable capacity left per account in the pool per step; 0 while blocked. */
   values: Map<string, number[]>;
   total: number[];
-  /**
-   * Combined demand per hour in Pro 5h sessions: each account's measured burn times its
-   * capacity.
-   */
+  /** The pool accounts' measured load per hour, in absolute units (Pro sessions or weeks). */
   demand: number;
-  /**
-   * The 5h capacity of the pooled accounts that can take requests now (not weekly-blocked)
-   * together, in Pro 5h sessions.
-   */
+  /** The window size of the pool accounts that can take requests now, in absolute units. */
   capacity: number;
   /** First step at which the pool total is 0; null when it stays above 0 or is empty. */
   emptyAt: number | null;
-  /** Earliest known refill among the accounts (r7 for a blocked one); null when none. */
+  /** Earliest known refill among the pool accounts (a block's end for a blocked one). */
   nextRefill: number | null;
-  /** Steps where any account's drain changes slope; a chart must draw a point there. */
+  /** Steps where any pool account's drain changes slope; a chart must draw a point there. */
   breakpoints: number[];
 }
 
+const blockedAt = (blocks: BlockInterval[], time: number): boolean =>
+  blocks.some((block) => time >= block.from && time < block.until);
+
 /**
- * The 5h pool as the proxy routes it, in `stepMs` steps over `horizonMs`. Accounts
- * differ in size, so demand is counted in Pro 5h sessions: each account's measured burn
- * times its `capacityOf`. Each step the demand is spread over the accounts that still
- * have capacity in proportion to their measured demand, or equally when all of them
- * measure 0, the way round-robin hands out requests; an account that cannot take its
- * share passes the rest on, and drains by its share over its own capacity. An account at
- * 0 takes nothing until its known reset refills it to 100%. A window opened during the
- * horizon resets after it ends, so each account refills at most once inside a 5-hour
- * horizon. A weekly-blocked account takes nothing and counts 0 until its r7, then
- * rejoins with its 5h capacity (refilled if its 5h reset passed meanwhile). An account
- * with no reading is left out: no capacity, no demand.
+ * Simulates `kind`'s window over `horizonMs` in `stepMs` steps, moving load the way the
+ * proxy routes it: round-robin with session affinity, rebinding on a quota failure, and
+ * credential priority.
+ *
+ * - Each account keeps carrying its measured load (rate times size, in absolute units):
+ *   its bound sessions stay with it while it can take requests.
+ * - An account that cannot take requests (its window is empty, or a block holds it) hands
+ *   all it carries to the highest priority among the accounts that can, split evenly
+ *   across that tier (round-robin), so a bigger window drains slower by the same amount.
+ *   Moved load stays where it landed: a refilled account gets no sessions back and takes
+ *   only its share of later failover.
+ * - When no account can take requests the load waits and lands on the first ones that can.
+ * - An account at 0 refills to 100% at its known reset; a window opened during the horizon
+ *   resets one span after the last, so a 5h or weekly horizon holds one refill per account.
+ *
+ * New sessions also bind to the highest priority; how many arrive is not recorded, so
+ * the simulation does not move load toward a refilled account on their account. An account
+ * whose projection has no reading (`left` null) is left out: no capacity, no load, takes
+ * no failover.
  */
-export function simulatePool(
-  allProjections: AccountProjection[],
+export function simulateRouting(
+  allAccounts: RoutedAccount[],
+  kind: WindowKind,
   now: number,
   horizonMs: number,
-  capacityOf: (authId: string) => number = () => 1,
-  stepMs: number = POOL_STEP_MS
-): PoolSimulation {
-  const projections = allProjections.filter(
-    (projection): projection is AccountProjection & { left: number } => projection.left !== null
+  stepMs: number = kind === '7d' ? WEEKLY_STEP_MS : POOL_STEP_MS
+): RoutingRun {
+  const accounts = allAccounts.filter(
+    (account) => account.projection === null || account.projection.left !== null
   );
   const steps = Math.max(0, Math.ceil(horizonMs / stepMs));
-  const span = WINDOW_SPAN_MS['5h'];
-  const size = projections.map((projection) => capacityOf(projection.authId));
-  /** Measured demand per account, in Pro sessions per hour. */
-  const draw = projections.map((projection, index) => projection.rate * size[index]);
-  const demand = draw.reduce((total, value) => total + value, 0);
-  const perStep = (demand * stepMs) / HOUR_MS;
-  /** The 5h capacity the account holds, usable or not, as a share of its own window. */
-  const capacity = projections.map((projection) =>
-    projection.left > EMPTY_EPSILON ? projection.left : 0
+  const span = WINDOW_SPAN_MS[kind];
+  const hours = stepMs / HOUR_MS;
+  const member = accounts.map((account) => account.projection !== null);
+  const size = accounts.map((account) => account.size);
+  /** Capacity left as a share of the account's own window; unbounded without a window. */
+  const capacity = accounts.map(({ projection }) =>
+    projection === null
+      ? Number.POSITIVE_INFINITY
+      : (projection.left ?? 0) > EMPTY_EPSILON
+        ? (projection.left ?? 0)
+        : 0
   );
-  const nextReset = projections.map((projection) => projection.reset);
-  const blockedUntil = projections.map((projection) =>
-    projection.blockedUntil !== null && projection.blockedUntil > now
-      ? projection.blockedUntil
-      : null
+  const nextReset = accounts.map(({ projection }) => projection?.reset ?? null);
+  /** Load each account carries, absolute units per hour. */
+  const carry = accounts.map(({ projection }, index) =>
+    projection === null ? 0 : projection.rate * size[index]
   );
-  const openCapacity = size.reduce(
-    (sum, value, index) => (blockedUntil[index] === null ? sum + value : sum),
-    0
-  );
-  const usable = () => capacity.map((value, index) => (blockedUntil[index] === null ? value : 0));
-  const rows = usable().map((value) => [value]);
-  const total = [rows.reduce((sum, row) => sum + row[0], 0)];
+  const draw = carry.slice();
+  let waiting = 0;
+
+  const canTake = (index: number, time: number) =>
+    capacity[index] > EMPTY_EPSILON && !blockedAt(accounts[index].blocks, time);
+  /** The accounts round-robin would hand failover to at `time`. */
+  const topTier = (time: number): number[] => {
+    const open = accounts.flatMap((_, index) => (canTake(index, time) ? [index] : []));
+    if (open.length === 0) return open;
+    const best = Math.max(...open.map((index) => accounts[index].priority));
+    return open.filter((index) => accounts[index].priority === best);
+  };
+  /** The account cannot hold more: what it carries fails over. */
+  const runDry = (index: number) => {
+    capacity[index] = 0;
+    waiting += carry[index];
+    carry[index] = 0;
+  };
+  /** Take `amount` (absolute units) out of the account; returns what it could not hold. */
+  const take = (index: number, amount: number): number => {
+    if (!member[index] || amount <= 0) return 0;
+    const room = capacity[index] * size[index];
+    if (amount >= room) {
+      runDry(index);
+      return amount - room;
+    }
+    capacity[index] -= amount / size[index];
+    if (capacity[index] <= EMPTY_EPSILON) runDry(index);
+    return 0;
+  };
+  const usable = (index: number, time: number) =>
+    blockedAt(accounts[index].blocks, time) ? 0 : capacity[index];
+
+  const memberIndexes = accounts.flatMap((_, index) => (member[index] ? [index] : []));
+  const rows = memberIndexes.map((index) => [usable(index, now)]);
 
   for (let step = 1; step <= steps; step += 1) {
-    let need = perStep;
-    while (need > EMPTY_EPSILON) {
-      const active = capacity.flatMap((value, index) =>
-        value > 0 && blockedUntil[index] === null ? [index] : []
-      );
-      if (active.length === 0) break;
-      const drawSum = active.reduce((sum, index) => sum + draw[index], 0);
-      const weight = (index: number) => (drawSum > 0 ? draw[index] / drawSum : 1 / active.length);
-      let taken = 0;
-      let capped = false;
-      active.forEach((index) => {
-        const share = need * weight(index);
-        const room = capacity[index] * size[index];
-        if (share >= room) {
-          taken += room;
-          capacity[index] = 0;
-          capped = true;
-        } else {
-          taken += share;
-          capacity[index] -= share / size[index];
-          if (capacity[index] <= EMPTY_EPSILON) {
-            capacity[index] = 0;
-            capped = true;
-          }
-        }
-      });
-      need -= taken;
-      // Nobody ran dry, so every share was taken in full.
-      if (!capped) break;
+    const from = now + (step - 1) * stepMs;
+    const to = now + step * stepMs;
+
+    // Sessions on an account that cannot take requests fail over to the top tier.
+    accounts.forEach((_, index) => {
+      if (carry[index] > 0 && !canTake(index, from)) {
+        waiting += carry[index];
+        carry[index] = 0;
+      }
+    });
+    if (waiting > 0) {
+      const tier = topTier(from);
+      if (tier.length > 0) {
+        tier.forEach((index) => (carry[index] += waiting / tier.length));
+        waiting = 0;
+      }
     }
 
-    const time = now + step * stepMs;
+    // Serve the step. What an account cannot hold fails over within the step.
+    let overflow = 0;
+    accounts.forEach((_, index) => {
+      if (canTake(index, from)) overflow += take(index, carry[index] * hours);
+    });
+    while (overflow > EMPTY_EPSILON) {
+      const tier = topTier(from);
+      if (tier.length === 0) break;
+      const share = overflow / tier.length;
+      overflow = 0;
+      tier.forEach((index) => (overflow += take(index, share)));
+    }
+
     nextReset.forEach((reset, index) => {
-      if (reset === null || reset > time) return;
+      if (reset === null || reset > to) return;
       capacity[index] = 1;
       let next = reset;
-      while (next <= time) next += span;
+      while (next <= to) next += span;
       nextReset[index] = next;
     });
-    blockedUntil.forEach((until, index) => {
-      if (until !== null && until <= time) blockedUntil[index] = null;
-    });
-    const values = usable();
-    values.forEach((value, index) => rows[index].push(value));
-    total.push(values.reduce((sum, value) => sum + value, 0));
+    memberIndexes.forEach((index, row) => rows[row].push(usable(index, to)));
   }
 
-  const timeOf = (step: number) => now + step * stepMs;
-  const firstEmpty = (series: number[]) => {
-    const step = series.findIndex((value) => value <= EMPTY_EPSILON);
-    return step < 0 ? null : timeOf(step);
+  const ids = memberIndexes.map((index) => accounts[index].authId);
+  const blockEndNow = (index: number): number | null => {
+    const ends = accounts[index].blocks
+      .filter((block) => now >= block.from && now < block.until)
+      .map((block) => block.until);
+    return ends.length > 0 ? Math.max(...ends) : null;
   };
+  return {
+    start: now,
+    stepMs,
+    values: new Map(ids.map((id, row) => [id, rows[row]])),
+    draw: new Map(memberIndexes.map((index) => [accounts[index].authId, draw[index]])),
+    size: new Map(memberIndexes.map((index) => [accounts[index].authId, size[index]])),
+    blockedNow: new Set(
+      memberIndexes
+        .filter((index) => blockedAt(accounts[index].blocks, now))
+        .map((index) => accounts[index].authId)
+    ),
+    refill: new Map(
+      memberIndexes.map((index) => [
+        accounts[index].authId,
+        blockEndNow(index) ?? accounts[index].projection?.reset ?? null,
+      ])
+    ),
+  };
+}
+
+/**
+ * The pool of `authIds` within a run: their capacity summed per step, when it first runs
+ * dry, their measured demand and the capacity that can take requests now. Ids that are
+ * not run members (no reading, or no such window) are left out.
+ */
+export function poolOf(run: RoutingRun, authIds: Iterable<string>): PoolSimulation {
+  const ids = [...new Set(authIds)].filter((id) => run.values.has(id));
+  const rows = ids.map((id) => run.values.get(id) ?? []);
+  const length = rows.length > 0 ? rows[0].length : 1;
+  const total = Array.from({ length }, (_, step) => rows.reduce((sum, row) => sum + row[step], 0));
+  const timeOf = (step: number) => run.start + step * run.stepMs;
+  const firstEmpty = total.findIndex((value) => value <= EMPTY_EPSILON);
   const breakpoints: number[] = [];
-  for (let step = 1; step < steps; step += 1) {
+  for (let step = 1; step < length - 1; step += 1) {
     const bends = rows.some(
       (row) => Math.abs(row[step + 1] - row[step] - (row[step] - row[step - 1])) > EMPTY_EPSILON
     );
     if (bends) breakpoints.push(timeOf(step));
   }
-  // A blocked account refills, as far as the pool can tell, when its weekly block ends.
-  const resets = projections.flatMap((projection) => {
-    const refill =
-      projection.blockedUntil !== null && projection.blockedUntil > now
-        ? projection.blockedUntil
-        : projection.reset;
+  const refills = ids.flatMap((id) => {
+    const refill = run.refill.get(id) ?? null;
     return refill === null ? [] : [refill];
   });
-
   return {
-    start: now,
-    stepMs,
-    values: new Map(projections.map((projection, index) => [projection.authId, rows[index]])),
+    start: run.start,
+    stepMs: run.stepMs,
+    values: new Map(ids.map((id, index) => [id, rows[index]])),
     total,
-    demand,
-    capacity: openCapacity,
-    emptyAt: projections.length > 0 ? firstEmpty(total) : null,
-    nextRefill: resets.length > 0 ? Math.min(...resets) : null,
+    demand: ids.reduce((sum, id) => sum + (run.draw.get(id) ?? 0), 0),
+    capacity: ids.reduce(
+      (sum, id) => (run.blockedNow.has(id) ? sum : sum + (run.size.get(id) ?? 0)),
+      0
+    ),
+    emptyAt: ids.length > 0 && firstEmpty >= 0 ? timeOf(firstEmpty) : null,
+    nextRefill: refills.length > 0 ? Math.min(...refills) : null,
     breakpoints,
   };
+}
+
+/**
+ * The spans during which an account's simulated capacity in `run` is 0, from the step it
+ * first reads 0 to the step it refills (or past the horizon). The 5h run takes these from
+ * the weekly run as blocks: an account whose weekly window runs dry takes no requests.
+ */
+export function emptySpans(run: RoutingRun, authId: string): BlockInterval[] {
+  const row = run.values.get(authId);
+  if (!row) return [];
+  const spans: BlockInterval[] = [];
+  let from: number | null = null;
+  row.forEach((value, step) => {
+    const time = run.start + step * run.stepMs;
+    if (value <= EMPTY_EPSILON) {
+      if (from === null) from = time;
+    } else if (from !== null) {
+      spans.push({ from, until: time });
+      from = null;
+    }
+  });
+  if (from !== null) spans.push({ from, until: run.start + row.length * run.stepMs });
+  return spans;
 }
 
 /** An account's simulated capacity at `time`, linear between steps; null when not pooled. */

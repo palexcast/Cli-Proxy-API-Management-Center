@@ -136,7 +136,7 @@
 
 .tiles {
   display: grid;
-  /* auto-fill keeps the lone runway tile card-sized instead of stretching it. */
+  /* auto-fill keeps the runway tiles card-sized instead of stretching them. */
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
 }

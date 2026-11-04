@@ -16,11 +16,7 @@ import {
   type QuotaWindow,
   type WindowKind,
 } from '../src/features/usageHistory/model';
-import {
-  projectAccount,
-  simulatePool,
-  type AccountProjection,
-} from '../src/features/usageHistory/projection';
+import { projectAccount, type AccountProjection } from '../src/features/usageHistory/projection';
 import {
   axisPosition,
   buildCapacityChart,
@@ -32,7 +28,7 @@ import { RunwayTile } from '../src/features/usageHistory/components/RunwayTile';
 import { buildPools } from '../src/features/usageHistory/pools';
 import type { QuotaHistorySample } from '../src/services/api/quotaHistory';
 import { NOW, quotaHistoryResponse } from './fixtures/quotaHistory';
-import { accountEmptyAt } from './helpers/usageHistoryPool';
+import { accountEmptyAt, simulate } from './helpers/usageHistoryPool';
 
 const HOSTILE = '<img src=x onerror=alert(1)> team';
 const raw = {
@@ -63,8 +59,8 @@ const projections = projectionsOf('5h');
 const projections7 = projectionsOf('7d');
 const team = accounts.filter((account) => account.plan === 'team');
 const FIVE_H = 5 * HOUR_MS;
-const poolOf = (list: AccountProjection[]) => simulatePool(list, NOW, FIVE_H);
-const teamPool = poolOf(
+const simulate5 = (list: AccountProjection[]) => simulate(list, { now: NOW, horizonMs: FIVE_H });
+const teamPool = simulate5(
   team.map((account) => projections.get(account.authId) as AccountProjection)
 );
 /** Sum of the series at a grid index: the top of the stacked chart. */
@@ -102,7 +98,7 @@ const handMade = (
 
 /** A 24h 5h-chart over hand-made accounts with no history, tail from their pool. */
 function pooledChart(list: AccountProjection[]) {
-  const pool = poolOf(list);
+  const pool = simulate5(list);
   const chartAccounts = list.map((entry, slot) => ({
     authId: entry.authId,
     label: entry.authId,
@@ -111,6 +107,7 @@ function pooledChart(list: AccountProjection[]) {
     slot,
     status: 'active' as const,
     fiveHourLimit: true,
+    priority: 0,
   }));
   const data = buildCapacityChart({
     accounts: chartAccounts,
@@ -170,19 +167,21 @@ describe('usage history chart data', () => {
     expect(alex[splitIndex]).toBeCloseTo(0.55, 10);
     const early = times.findLastIndex((time) => time <= NOW + 0.5 * HOUR_MS);
     expect(alex[early]).toBeCloseTo(0.55 - (0.15 * (times[early] - NOW)) / HOUR_MS, 2);
-    // James is dry after about an hour; his share moves to Alex and Kay in proportion.
+    // James is dry after about an hour; round-robin moves his 0.25/h to Alex and Kay evenly.
     const jamesDry = accountEmptyAt(teamPool, 'claude-b2') ?? 0;
     expect(Math.abs(jamesDry - (NOW + HOUR_MS))).toBeLessThanOrEqual(60 * 1000);
     expect(james[times.indexOf(jamesDry)]).toBe(0);
     const beforeReset = at(2) - 1;
     expect(times[beforeReset]).toBe(NOW + 2 * HOUR_MS - 60 * 1000);
-    expect(alex[beforeReset]).toBeCloseTo(0.4 - 0.3 * (59 / 60), 2);
-    expect(kay[beforeReset]).toBeCloseTo(0.6 - 0.2 * (59 / 60), 2);
+    expect(alex[beforeReset]).toBeCloseTo(0.4 - 0.275 * (59 / 60), 2);
+    expect(kay[beforeReset]).toBeCloseTo(0.6 - 0.225 * (59 / 60), 2);
     expect(james[beforeReset]).toBe(0);
-    // All three refill at the 14:00 reset and drain at their own rates again.
+    // All three refill at the 14:00 reset. James's sessions stay where they moved (session
+    // affinity), so Alex and Kay keep carrying them and James stays full.
     expect([alex, james, kay].map((values) => values[at(2)])).toEqual([1, 1, 1]);
-    expect(alex.at(-1)).toBeCloseTo(1 - 0.15 * 3, 2);
-    expect(james.at(-1)).toBeCloseTo(1 - 0.25 * 3, 2);
+    expect(alex.at(-1)).toBeCloseTo(1 - 0.275 * 3, 2);
+    expect(kay.at(-1)).toBeCloseTo(1 - 0.225 * 3, 2);
+    expect(james.at(-1)).toBe(1);
     // Pete has never been seen: no data observed and no tail.
     expect(valuesOf(chart5, 'claude-d4').every((value) => value === null)).toBe(true);
 
@@ -257,6 +256,7 @@ describe('usage history chart data', () => {
     );
     const markup = renderToStaticMarkup(
       createElement(RunwayTile, {
+        kind: '5h',
         pool,
         now: NOW,
         formatDuration: (ms: number) => `${Math.round(ms / 60000)}min`,
@@ -270,7 +270,8 @@ describe('usage history chart data', () => {
 
     const dry = renderToStaticMarkup(
       createElement(RunwayTile, {
-        pool: poolOf([handMade('a', 0.5, 1, NOW + 4 * HOUR_MS), handMade('b', 0.9, 0, null)]),
+        kind: '5h',
+        pool: simulate5([handMade('a', 0.5, 1, NOW + 4 * HOUR_MS), handMade('b', 0.9, 0, null)]),
         now: NOW,
         formatDuration: (ms: number) => `${Math.round(ms / 60000)}min`,
         formatClock: (time: number) => new Date(time).toISOString().slice(11, 16),
@@ -283,7 +284,8 @@ describe('usage history chart data', () => {
     );
     const idle = renderToStaticMarkup(
       createElement(RunwayTile, {
-        pool: poolOf([handMade('a', 1, 0, null)]),
+        kind: '5h',
+        pool: simulate5([handMade('a', 1, 0, null)]),
         now: NOW,
         formatDuration: () => '',
         formatClock: () => '',
@@ -307,6 +309,7 @@ describe('usage history chart data', () => {
       slot: 0,
       status: 'active',
       fiveHourLimit: true,
+      priority: 0,
     };
     const data = buildCapacityChart({
       accounts: [account],
@@ -467,6 +470,7 @@ describe('usage history stacked chart weights', () => {
       slot: 0,
       status: 'active',
       fiveHourLimit: true,
+      priority: 0,
     },
     {
       authId: 'm',
@@ -476,12 +480,21 @@ describe('usage history stacked chart weights', () => {
       slot: 1,
       status: 'active',
       fiveHourLimit: true,
+      priority: 0,
     },
   ];
   const projections5 = new Map(
     [handMade('a', 0.2, 0, null), handMade('m', 0.9, 0, null)].map((entry) => [entry.authId, entry])
   );
-  const pools = buildPools(list, projections5, 'all', NOW, FIVE_H);
+  const pools = buildPools({
+    accounts: list,
+    projections5,
+    projections7: new Map(),
+    scope: 'all',
+    now: NOW,
+    horizon5Ms: FIVE_H,
+    horizon7Ms: WINDOW_SPAN_MS['7d'],
+  });
   const chartOf = (weighted: boolean) =>
     buildCapacityChart({
       accounts: list,
@@ -531,6 +544,7 @@ describe('usage history stacked chart weights', () => {
       slot: 2,
       status: 'active',
       fiveHourLimit: true,
+      priority: 0,
     };
     const data = buildCapacityChart({
       accounts: [...list, unseen],
@@ -571,6 +585,7 @@ describe('usage history 5h pools', () => {
       slot: 0,
       status: 'active',
       fiveHourLimit: true,
+      priority: 0,
     },
     {
       authId: 'b',
@@ -580,6 +595,7 @@ describe('usage history 5h pools', () => {
       slot: 1,
       status: 'active',
       fiveHourLimit: true,
+      priority: 0,
     },
     {
       authId: 'm',
@@ -589,6 +605,7 @@ describe('usage history 5h pools', () => {
       slot: 2,
       status: 'active',
       fiveHourLimit: true,
+      priority: 0,
     },
   ];
   const projections5 = new Map(
@@ -598,37 +615,130 @@ describe('usage history 5h pools', () => {
       handMade('m', 0.9, 0.5, reset),
     ].map((entry) => [entry.authId, entry])
   );
-  const poolsFor = (scope: 'team' | 'all') => buildPools(list, projections5, scope, NOW, FIVE_H);
+  const poolsFor = (scope: 'team' | 'all') =>
+    buildPools({
+      accounts: list,
+      projections5,
+      projections7: new Map(),
+      scope,
+      now: NOW,
+      horizon5Ms: FIVE_H,
+      horizon7Ms: WINDOW_SPAN_MS['7d'],
+    });
 
   test('the chart scope moves the chart pool, never the tile', () => {
     const team = poolsFor('team');
     const all = poolsFor('all');
     expect(all.team).toEqual(team.team);
-    // The chart itself does follow the scope: pooled with 'm', the accounts last longer.
-    expect(team.chart.emptyAt).toBe(NOW + 48 * 60 * 1000);
-    // In Pro sessions: 'a' burns 6.25/h and is dry at 12 minutes; Max 20x 'm' then holds
-    // 16 at 16.25/h, dry at about 71 minutes; idle 'b' holds 3.75 and lasts to 85.
+    // One routed run behind both scopes. In Pro sessions: 'a' burns 6.25/h and is dry at
+    // 12 minutes; round-robin splits its load over idle 'b' and Max 20x 'm', 3.125/h each.
+    // 'b' holds 3.75 and is dry at 84; 'm' then holds 0.25 at 16.25/h, dry at 85.
+    expect(team.chart.emptyAt).toBe(NOW + 84 * 60 * 1000);
     expect(all.chart.demand).toBeCloseTo(16.25, 10);
     expect(accountEmptyAt(all.chart, 'a')).toBe(NOW + 12 * 60 * 1000);
-    expect(accountEmptyAt(all.chart, 'm')).toBe(NOW + 72 * 60 * 1000);
+    expect(accountEmptyAt(all.chart, 'b')).toBe(NOW + 84 * 60 * 1000);
+    expect(accountEmptyAt(all.chart, 'm')).toBe(NOW + 85 * 60 * 1000);
     expect(all.chart.emptyAt).toBe(NOW + 85 * 60 * 1000);
-    expect(accountEmptyAt(all.chart, 'b')).toBe(NOW + 85 * 60 * 1000);
   });
 
   test('the tile reads the Team pool: Team accounts only, whatever the scope', () => {
     const pools = poolsFor('all');
     expect(pools.team.values.has('m')).toBe(false);
-    expect(pools.team.emptyAt).toBe(NOW + 48 * 60 * 1000);
+    // 'm' is not in the Team pool, but it takes half of what 'a' sheds.
+    expect(pools.team.emptyAt).toBe(NOW + 84 * 60 * 1000);
     const format = (ms: number) => `${Math.round(ms / 60000)}min`;
     const tile = renderToStaticMarkup(
       createElement(RunwayTile, {
+        kind: '5h',
         pool: pools.team,
         now: NOW,
         formatDuration: format,
         formatClock: format,
       })
     );
-    expect(tile).toContain('>48min<');
+    expect(tile).toContain('>84min<');
+  });
+});
+
+describe('usage history weekly pool', () => {
+  const WEEK = WINDOW_SPAN_MS['7d'];
+  const pools = buildPools({
+    accounts,
+    projections5: projections,
+    projections7,
+    scope: 'all',
+    now: NOW,
+    horizon5Ms: FIVE_H,
+    horizon7Ms: WEEK,
+  });
+  const format = (ms: number) => `${Math.round(ms / HOUR_MS)}h`;
+  const clock = (time: number) => new Date(time).toISOString().slice(5, 16);
+
+  test('the weekly tail draws the routed weekly pool', () => {
+    // Every account with weekly readings; idle Pete has none.
+    expect([...pools.weekly.values.keys()].sort()).toEqual([
+      'claude-a1',
+      'claude-b2',
+      'claude-c3',
+      'claude-e5',
+      'claude-f6',
+    ]);
+    const data = buildCapacityChart({
+      accounts,
+      samples,
+      windows: windowsOf('7d'),
+      kind: '7d',
+      from: NOW - 28 * 24 * HOUR_MS,
+      to: NOW,
+      points: 360,
+      tail: { horizonMs: WEEK, projections: projections7, pool: pools.weekly },
+    });
+    const split = data.splitIndex ?? -1;
+    pools.weekly.breakpoints.forEach((time) => expect(data.times).toContain(time));
+    const alex = valuesOf(data, 'claude-a1');
+    for (let index = split + 1; index < data.times.length; index += 1) {
+      const row = pools.weekly.values.get('claude-a1') ?? [];
+      const step = Math.min(row.length - 1, (data.times[index] - NOW) / pools.weekly.stepMs);
+      const lower = Math.floor(step);
+      const upper = Math.min(row.length - 1, lower + 1);
+      expect(alex[index]).toBeCloseTo(row[lower] + (row[upper] - row[lower]) * (step - lower), 10);
+    }
+  });
+
+  test('the weekly tile says when the weekly pool runs dry, per day', () => {
+    const dry = simulate([handMade('x', 0.1, 0.02, null)], {
+      now: NOW,
+      horizonMs: WEEK,
+      kind: '7d',
+    });
+    const tile = renderToStaticMarkup(
+      createElement(RunwayTile, {
+        kind: '7d',
+        pool: dry,
+        now: NOW,
+        formatDuration: format,
+        formatClock: clock,
+      })
+    );
+    expect(tile).toContain('Weekly runway');
+    expect(tile).toContain('>5h<');
+    expect(tile).toContain(
+      'pool empty at 10-27T17:00, demand 48% of its capacity per day, refills included'
+    );
+  });
+
+  test('the weekly tile without a weekly account says so', () => {
+    const tile = renderToStaticMarkup(
+      createElement(RunwayTile, {
+        kind: '7d',
+        pool: simulate([], { now: NOW, horizonMs: WEEK, kind: '7d' }),
+        now: NOW,
+        formatDuration: format,
+        formatClock: clock,
+      })
+    );
+    expect(tile).toContain('>—<');
+    expect(tile).toContain('no account reports a weekly window');
   });
 });
 
@@ -645,6 +755,7 @@ describe('usage history no-data gaps and weekly blocks', () => {
       slot: 0,
       status: 'active',
       fiveHourLimit: true,
+      priority: 0,
     },
     {
       authId: 'n',
@@ -654,6 +765,7 @@ describe('usage history no-data gaps and weekly blocks', () => {
       slot: 1,
       status: 'active',
       fiveHourLimit: true,
+      priority: 0,
     },
     {
       authId: 'z',
@@ -663,6 +775,7 @@ describe('usage history no-data gaps and weekly blocks', () => {
       slot: 2,
       status: 'active',
       fiveHourLimit: true,
+      priority: 0,
     },
     {
       authId: 'w',
@@ -672,6 +785,7 @@ describe('usage history no-data gaps and weekly blocks', () => {
       slot: 3,
       status: 'active',
       fiveHourLimit: true,
+      priority: 0,
     },
   ];
   // 'a' is seen throughout, 'n' from two hours ago, 'z' never; 'w' is weekly-exhausted
@@ -702,7 +816,15 @@ describe('usage history no-data gaps and weekly blocks', () => {
   const projections5 = new Map(
     list.map(({ authId }) => [authId, projectAccount(authId, own.get(authId) ?? [], '5h', NOW)])
   );
-  const pools = buildPools(list, projections5, 'team', NOW, FIVE_H);
+  const pools = buildPools({
+    accounts: list,
+    projections5,
+    projections7: new Map(),
+    scope: 'team',
+    now: NOW,
+    horizon5Ms: FIVE_H,
+    horizon7Ms: WINDOW_SPAN_MS['7d'],
+  });
   // Every 30 minutes over the last 6 hours, then the pooled 5h tail.
   const data = buildCapacityChart({
     accounts: list,
@@ -871,6 +993,7 @@ describe('usage history accounts out of the pool', () => {
       slot: 0,
       status: 'disabled',
       fiveHourLimit: true,
+      priority: 0,
     };
     const legend = renderToStaticMarkup(
       createElement(ChartLegend, { accounts: [off], activeIds: new Set(['off']), kind: '5h' })
