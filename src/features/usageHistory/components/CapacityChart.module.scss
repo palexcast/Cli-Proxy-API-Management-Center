@@ -6,6 +6,10 @@
 .chart {
   --chart-height: 220px;
   --row-height: 52px;
+  --rows-gap: 10px;
+  /* The burn strip under the stacked chart, and the room above it for its caption. */
+  --burn-height: 80px;
+  --burn-gap: 30px;
 
   margin: 0;
   display: flex;
@@ -29,14 +33,25 @@
 }
 
 .yAxis {
-  position: relative;
+  display: flex;
+  flex-direction: column;
   width: 40px;
-  height: var(--chart-height);
   flex: none;
 
   @include mobile {
     width: 32px;
   }
+}
+
+.yTicks {
+  position: relative;
+  height: var(--chart-height);
+}
+
+.burnTicks {
+  position: relative;
+  height: var(--burn-height);
+  margin-top: var(--burn-gap);
 }
 
 .yTick {
@@ -55,7 +70,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--rows-gap);
   border-radius: $radius-sm;
   touch-action: pan-y;
 
@@ -226,6 +241,78 @@
 .markerLabelEnd {
   left: auto;
   right: 5px;
+}
+
+/* ---------- burn strip ---------- */
+
+.burnCanvas {
+  position: relative;
+  width: 100%;
+  height: var(--burn-height);
+  margin-top: calc(var(--burn-gap) - var(--rows-gap));
+}
+
+.burnLabel {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 7px);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.burnArea {
+  fill: var(--text-primary);
+  fill-opacity: 0.08;
+}
+
+.burnLine,
+.burnProjected {
+  fill: none;
+  stroke: var(--text-primary);
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.burnLine {
+  stroke-width: 1.75px;
+}
+
+.burnProjected {
+  stroke-width: 1.5px;
+  stroke-dasharray: 4 3;
+  opacity: 0.7;
+}
+
+.burnPeak {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--text-primary);
+  box-shadow: 0 0 0 2px var(--uh-surface);
+  pointer-events: none;
+}
+
+.burnPeakLabel {
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  transform: translateY(-50%);
+  padding: 0 3px;
+  border-radius: $radius-sm;
+  background: var(--uh-surface);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.burnPeakLabelEnd {
+  left: auto;
+  right: 10px;
 }
 
 /* ---------- tooltip ---------- */

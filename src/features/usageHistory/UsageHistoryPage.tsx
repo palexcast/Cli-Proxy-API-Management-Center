@@ -20,8 +20,15 @@ import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { useRevealGroup } from '@/hooks/motion';
 import type { QuotaHistorySample } from '@/services/api/quotaHistory';
 import { useAuthStore } from '@/stores';
+import { BURN_DISPLAY_SCALE, buildBurn, burnLineWindow, type Burn } from './burn';
 import { axisPosition, buildCapacityChart, type ChartData } from './chartData';
-import { CapacityChart, type AxisTick, type ChartMarker } from './components/CapacityChart';
+import { BurnStats } from './components/BurnStats';
+import {
+  CapacityChart,
+  type AxisTick,
+  type BurnStrip,
+  type ChartMarker,
+} from './components/CapacityChart';
 import { ChartLegend, Segmented } from './components/Controls';
 import { RunwayTile } from './components/RunwayTile';
 import { durationParts } from './format';
@@ -154,6 +161,44 @@ export function UsageHistoryPage() {
     [formatters]
   );
   const formatTime = useCallback((time: number) => formatters.full.format(time), [formatters]);
+  /**
+   * A burn rate in % of the pool per hour with its unit: two decimals below 1 (weekly
+   * rates sit there), one below 10, whole above.
+   */
+  const formatPercent = useCallback(
+    (value: number, signed: boolean) => {
+      const size = Math.abs(value);
+      const digits = size < 1 ? 2 : size < 10 ? 1 : 0;
+      const number = new Intl.NumberFormat(language, {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+      }).format(size);
+      const sign = signed ? (value < 0 ? '-' : '+') : value < 0 ? '-' : '';
+      return `${sign}${number}`;
+    },
+    [language]
+  );
+  const formatRate = useCallback(
+    (value: number, signed = false) =>
+      t('usage_history.burn_rate', { value: formatPercent(value, signed) }),
+    [formatPercent, t]
+  );
+  /** A rate in % of the pool per hour, written per day: the weekly summary's second line. */
+  const formatDaily = useCallback(
+    (perHour: number, signed = false) =>
+      t('usage_history.burn_rate_day', { value: formatPercent(perHour * 24, signed) }),
+    [formatPercent, t]
+  );
+  const burnStrip = useCallback(
+    (burn: Burn): BurnStrip => ({
+      values: burn.values.map((value) => (value === null ? null : value * BURN_DISPLAY_SCALE)),
+      peakIndex: burn.peakIndex,
+      label: t('usage_history.burn_label'),
+      name: t('usage_history.burn_title'),
+      format: (value: number) => formatRate(value),
+    }),
+    [formatRate, t]
+  );
   const formatDuration = useCallback(
     (ms: number) => {
       const parts = durationParts(ms);
@@ -299,7 +344,14 @@ export function UsageHistoryPage() {
       });
     }
     const unit = span5 >= RANGE_5_MS['7d'] ? 'day' : span5 < DAY_MS ? 'clock' : 'dayClock';
-    return { accounts, data, markers, ticks: axisTicks(data, unit) };
+    const burn = buildBurn({
+      data,
+      samples: model.samples5,
+      kind: '5h',
+      lineWindowMs: burnLineWindow('5h', span5, CHART_POINTS),
+      pool: pools.chart,
+    });
+    return { accounts, data, markers, ticks: axisTicks(data, unit), burn };
   }, [
     model,
     pools,
@@ -343,7 +395,14 @@ export function UsageHistoryPage() {
         }),
       });
     }
-    return { accounts, data, markers, ticks: axisTicks(data, 'day') };
+    const burn = buildBurn({
+      data,
+      samples: model.samples7,
+      kind: '7d',
+      lineWindowMs: burnLineWindow('7d', span7, CHART_POINTS),
+      pool: pools.weekly,
+    });
+    return { accounts, data, markers, ticks: axisTicks(data, 'day'), burn };
   }, [model, pools, now, span7, axisTicks, nowMarker, t, formatDuration, formatDayClock]);
 
   /* ---------- render ---------- */
@@ -487,12 +546,20 @@ export function UsageHistoryPage() {
               markers={chart5.markers}
               formatTime={formatTime}
               ariaLabel={t('usage_history.chart_aria_5h')}
+              burn={burnStrip(chart5.burn)}
             />
             <ChartLegend
               accounts={model.accounts}
               activeIds={activeIds(chart5.accounts)}
               kind="5h"
               showProjected
+            />
+            <BurnStats
+              kind="5h"
+              burn={chart5.burn}
+              times={chart5.data.times}
+              formatRate={formatRate}
+              formatTime={span5 < DAY_MS ? formatClock : formatDayClock}
             />
           </section>
 
@@ -507,12 +574,21 @@ export function UsageHistoryPage() {
               markers={chart7.markers}
               formatTime={formatTime}
               ariaLabel={t('usage_history.chart_aria_7d')}
+              burn={burnStrip(chart7.burn)}
             />
             <ChartLegend
               accounts={model.accounts}
               activeIds={activeIds(chart7.accounts)}
               kind="7d"
               showProjected
+            />
+            <BurnStats
+              kind="7d"
+              burn={chart7.burn}
+              times={chart7.data.times}
+              formatRate={formatRate}
+              formatTime={formatTime}
+              formatDaily={formatDaily}
             />
           </section>
         </>

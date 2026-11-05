@@ -1,12 +1,15 @@
 import { useId, useMemo, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ChartData } from '../chartData';
-import { formatShare, seriesColor } from '../format';
+import { seriesShares, type ChartData } from '../chartData';
+import { formatAxisNumber, formatShare, niceCeiling, seriesColor } from '../format';
 import styles from './CapacityChart.module.scss';
 
 const VIEW_WIDTH = 1000;
 const VIEW_HEIGHT = 100;
 const GRID_RATIOS = [1, 0.75, 0.5, 0.25, 0];
+const BURN_GRID_RATIOS = [1, 0.5, 0];
+/** Headroom above the burn strip's highest value, so the peak never touches the top. */
+const BURN_HEADROOM = 1.1;
 /** Past this point a marker's label sits left of its line so it is not clipped. */
 const MARKER_FLIP_AT = 0.7;
 /** Labelled dots closer than this (viewBox units) would print their labels on top of each other. */
@@ -25,6 +28,20 @@ export interface AxisTick {
   label: string;
 }
 
+/** A burn line drawn in a strip under the stacked chart, on the same grid and hover. */
+export interface BurnStrip {
+  /** Per grid point, in display units (% of the pool per hour or day); null where unknown. */
+  values: Array<number | null>;
+  /** Grid index of the observed peak, marked on the strip; null for none. */
+  peakIndex: number | null;
+  /** The strip's caption, naming the unit. */
+  label: string;
+  /** The tooltip row's name. */
+  name: string;
+  /** A value with its unit. */
+  format: (value: number) => string;
+}
+
 interface CapacityChartProps {
   data: ChartData;
   mode: 'stacked' | 'multiples';
@@ -34,6 +51,8 @@ interface CapacityChartProps {
   ariaLabel: string;
   /** Grid index highlighted before any pointer or key input; none by default. */
   defaultActiveIndex?: number | null;
+  /** Burn line under the stacked chart; ignored in multiples mode. */
+  burn?: BurnStrip;
 }
 
 const xOf = (positions: number[], index: number) =>
@@ -287,9 +306,89 @@ function Canvas({
   );
 }
 
+interface BurnCanvasProps {
+  burn: BurnStrip;
+  /** The strip's top, in display units. */
+  max: number;
+  positions: number[];
+  splitIndex?: number;
+  markers: ChartMarker[];
+  activeIndex: number | null;
+}
+
+/** The burn strip: observed line over a faint area, projected line dashed, peak marked. */
+function BurnCanvas({ burn, max, positions, splitIndex, markers, activeIndex }: BurnCanvasProps) {
+  const { values, peakIndex } = burn;
+  const last = values.length - 1;
+  const split = splitIndex === undefined ? last : Math.min(splitIndex, last);
+  const y = (value: number) => VIEW_HEIGHT - (Math.min(value, max) / max) * VIEW_HEIGHT;
+  const zeros = new Array<number>(values.length).fill(0);
+  const area = bandPath(positions, values, zeros, 0, split, y);
+  const observed = linePath(positions, values, 0, split, y);
+  const projected = split < last ? linePath(positions, values, split, last, y) : '';
+  const peak = peakIndex === null ? null : values[peakIndex];
+  const peakRatio = peakIndex === null ? 0 : (positions[peakIndex] ?? 0);
+
+  return (
+    <div className={styles.burnCanvas} data-canvas="burn">
+      <span className={styles.burnLabel}>{burn.label}</span>
+      <div className={styles.gridlines} aria-hidden="true">
+        {BURN_GRID_RATIOS.map((ratio) => (
+          <span key={ratio} className={styles.gridline} style={{ top: `${(1 - ratio) * 100}%` }} />
+        ))}
+      </div>
+      <svg
+        className={styles.svg}
+        viewBox={`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`}
+        preserveAspectRatio="none"
+        aria-hidden="true"
+        focusable="false"
+      >
+        {area && <path className={styles.burnArea} d={area} />}
+        {observed && <path className={styles.burnLine} d={observed} />}
+        {projected && <path className={styles.burnProjected} d={projected} />}
+      </svg>
+      {peakIndex !== null && peak !== null && peak !== undefined && (
+        <span
+          className={styles.burnPeak}
+          style={{
+            left: pct((xOf(positions, peakIndex) / VIEW_WIDTH) * 100),
+            top: pct((y(peak) / VIEW_HEIGHT) * 100),
+          }}
+          aria-hidden="true"
+        >
+          <span
+            className={`${styles.burnPeakLabel} ${
+              peakRatio > MARKER_FLIP_AT ? styles.burnPeakLabelEnd : ''
+            }`}
+          >
+            {burn.format(peak)}
+          </span>
+        </span>
+      )}
+      {markers.map((marker) => (
+        <span
+          key={`${marker.tone}-${marker.position}`}
+          className={marker.tone === 'runway' ? styles.markerRunway : styles.markerNow}
+          style={{ left: pct(marker.position * 100) }}
+          aria-hidden="true"
+        />
+      ))}
+      {activeIndex !== null && values.length > 0 && (
+        <span
+          className={styles.crosshair}
+          style={{ left: pct((xOf(positions, activeIndex) / VIEW_WIDTH) * 100) }}
+          aria-hidden="true"
+        />
+      )}
+    </div>
+  );
+}
+
 /**
  * Capacity left per account as a stacked area (or one row per account), hand-drawn
- * SVG. Pointer and arrow keys move a crosshair; the tooltip lists every account.
+ * SVG. Pointer and arrow keys move a crosshair; the tooltip lists every account, and the
+ * burn rate when a burn strip is drawn.
  */
 export function CapacityChart({
   data,
@@ -299,6 +398,7 @@ export function CapacityChart({
   formatTime,
   ariaLabel,
   defaultActiveIndex = null,
+  burn: burnInput,
 }: CapacityChartProps) {
   const { t } = useTranslation();
   const hintId = useId();
@@ -311,25 +411,23 @@ export function CapacityChart({
     storedIndex === null || count === 0 ? null : Math.max(0, Math.min(storedIndex, count - 1));
   const slots = useMemo(() => series.map((entry) => entry.account.slot), [series]);
   const muted = useMemo(() => series.map((entry) => !entry.pooled), [series]);
+  const burn = mode === 'stacked' ? burnInput : undefined;
+  const burnMax = useMemo(() => {
+    const highest = Math.max(0, ...(burn?.values ?? []).map((value) => value ?? 0));
+    return niceCeiling(highest * BURN_HEADROOM);
+  }, [burn]);
 
-  // Each band's height is its share of the total weight of the accounts with data, so
-  // the stack reads as the share of the whole pool left; one never seen takes no room. A
-  // band with no data at a point adds nothing there, so the bands above close down.
+  // Each band's height is its share of the pool (`seriesShares`). A band with no data at
+  // a point adds nothing there, so the bands above close down.
   const stacked = useMemo(() => {
-    const seen = series.map((entry) => entry.values.some((value) => value != null));
-    const totalWeight = series.reduce(
-      (total, entry, index) => (seen[index] ? total + entry.weight : total),
-      0
-    );
+    const shares = seriesShares(series);
     const tops: Top[] = [];
     const bases: number[][] = [];
-    const shares: number[] = [];
     let running = new Array<number>(count).fill(0);
     series.forEach((entry, index) => {
-      const share = seen[index] && totalWeight > 0 ? entry.weight / totalWeight : 0;
+      const share = shares[index];
       const base = running;
       bases.push(base);
-      shares.push(share);
       tops.push(
         base.map((value, index) => {
           const own = entry.values[index];
@@ -355,6 +453,7 @@ export function CapacityChart({
     const rect = canvas.getBoundingClientRect();
     if (rect.height <= 0) return null;
     const value = 1 - (event.clientY - rect.top) / rect.height;
+    if (canvas.dataset.canvas === 'burn') return null;
     if (canvas.dataset.canvas === 'stack') {
       const found = stacked.tops.findIndex((top, seriesIndex) => {
         const topValue = top[index];
@@ -420,6 +519,7 @@ export function CapacityChart({
   const projectedAt = (index: number) => splitIndex !== undefined && index > splitIndex;
   const activeRatio = activeIndex === null ? 0 : (positions[activeIndex] ?? 0);
   const group = activeIndex === null ? null : groupAt(activeIndex);
+  const burnValue = burn && activeIndex !== null ? burn.values[activeIndex] : undefined;
 
   const canvasProps = {
     positions,
@@ -432,12 +532,23 @@ export function CapacityChart({
     <figure className={styles.chart}>
       <div className={styles.plot}>
         <div className={styles.yAxis} aria-hidden="true">
-          {mode === 'stacked' &&
-            GRID_RATIOS.map((ratio) => (
-              <span key={ratio} className={styles.yTick} style={{ top: `${(1 - ratio) * 100}%` }}>
-                {formatShare(ratio)}
-              </span>
-            ))}
+          <div className={styles.yTicks}>
+            {mode === 'stacked' &&
+              GRID_RATIOS.map((ratio) => (
+                <span key={ratio} className={styles.yTick} style={{ top: `${(1 - ratio) * 100}%` }}>
+                  {formatShare(ratio)}
+                </span>
+              ))}
+          </div>
+          {burn && (
+            <div className={styles.burnTicks}>
+              {BURN_GRID_RATIOS.map((ratio) => (
+                <span key={ratio} className={styles.yTick} style={{ top: `${(1 - ratio) * 100}%` }}>
+                  {formatAxisNumber(ratio * burnMax)}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         <div
@@ -457,19 +568,31 @@ export function CapacityChart({
             {t('usage_history.chart_keyboard_hint')}
           </span>
           {mode === 'stacked' ? (
-            <Canvas
-              {...canvasProps}
-              className={styles.canvas}
-              canvasId="stack"
-              activeSeries={activeSeries}
-              tops={stacked.tops}
-              bases={stacked.bases}
-              shares={stacked.shares}
-              slots={slots}
-              muted={muted}
-              dots={dots}
-              resetTicks={resetTicks}
-            />
+            <>
+              <Canvas
+                {...canvasProps}
+                className={styles.canvas}
+                canvasId="stack"
+                activeSeries={activeSeries}
+                tops={stacked.tops}
+                bases={stacked.bases}
+                shares={stacked.shares}
+                slots={slots}
+                muted={muted}
+                dots={dots}
+                resetTicks={resetTicks}
+              />
+              {burn && (
+                <BurnCanvas
+                  burn={burn}
+                  max={burnMax}
+                  positions={positions}
+                  splitIndex={splitIndex}
+                  markers={markers}
+                  activeIndex={activeIndex}
+                />
+              )}
+            </>
           ) : (
             series.map((entry, index) => (
               <div key={entry.account.authId} className={styles.row}>
@@ -559,6 +682,16 @@ export function CapacityChart({
                     <span className={styles.tooltipNoData}>{t('usage_history.no_data')}</span>
                   ) : (
                     <b>{formatShare(group.value)}</b>
+                  )}
+                </span>
+              )}
+              {burn && (
+                <span className={styles.tooltipRow}>
+                  <span className={styles.tooltipName}>{burn.name}</span>
+                  {burnValue === null || burnValue === undefined ? (
+                    <span className={styles.tooltipNoData}>{t('usage_history.no_data')}</span>
+                  ) : (
+                    <b>{burn.format(burnValue)}</b>
                   )}
                 </span>
               )}

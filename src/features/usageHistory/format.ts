@@ -1,5 +1,21 @@
 import { DAY_MS, HOUR_MS, MINUTE_MS, SERIES_SLOT_COUNT } from './model';
 
+/**
+ * The smallest round number at or above `value` whose half is round too: 1, 2, 4, 5, 6, 8
+ * or 10 times a power of ten. A burn strip's top; 1 for zero or less.
+ */
+export function niceCeiling(value: number): number {
+  if (!(value > 0) || !Number.isFinite(value)) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  const step = [1, 2, 4, 5, 6, 8, 10].find(
+    (multiple) => multiple * magnitude >= value * (1 - 1e-9)
+  );
+  return (step ?? 10) * magnitude;
+}
+
+/** An axis number with two significant digits at most: 0, 2.5, 40, 0.25. */
+export const formatAxisNumber = (value: number): string => String(Number(value.toPrecision(2)));
+
 /** 0..1 as a whole percentage. */
 export const formatShare = (value: number): string => `${Math.round(value * 100)}%`;
 

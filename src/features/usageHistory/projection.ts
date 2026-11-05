@@ -187,6 +187,11 @@ export interface RoutingRun {
   blockedNow: Set<string>;
   /** Each member's next refill: the end of the block it is in now, else its reset. */
   refill: Map<string, number | null>;
+  /**
+   * What each member served per step, as a share of its own window (index 0 is now and
+   * reads 0): the load it carried, never a refill or a block. The projected burn.
+   */
+  taken: Map<string, number[]>;
 }
 
 export interface PoolSimulation {
@@ -206,6 +211,8 @@ export interface PoolSimulation {
   nextRefill: number | null;
   /** Steps where any pool account's drain changes slope; a chart must draw a point there. */
   breakpoints: number[];
+  /** What each pool account served per step, a share of its own window (`RoutingRun.taken`). */
+  taken: Map<string, number[]>;
 }
 
 const blockedAt = (blocks: BlockInterval[], time: number): boolean =>
@@ -261,6 +268,8 @@ export function simulateRouting(
     projection === null ? 0 : projection.rate * size[index]
   );
   const draw = carry.slice();
+  /** What each account served in the current step, as a share of its own window. */
+  const served = accounts.map(() => 0);
   let waiting = 0;
 
   const canTake = (index: number, time: number) =>
@@ -283,10 +292,12 @@ export function simulateRouting(
     if (!member[index] || amount <= 0) return 0;
     const room = capacity[index] * size[index];
     if (amount >= room) {
+      served[index] += capacity[index];
       runDry(index);
       return amount - room;
     }
     capacity[index] -= amount / size[index];
+    served[index] += amount / size[index];
     if (capacity[index] <= EMPTY_EPSILON) runDry(index);
     return 0;
   };
@@ -295,6 +306,7 @@ export function simulateRouting(
 
   const memberIndexes = accounts.flatMap((_, index) => (member[index] ? [index] : []));
   const rows = memberIndexes.map((index) => [usable(index, now)]);
+  const takenRows = memberIndexes.map(() => [0]);
 
   for (let step = 1; step <= steps; step += 1) {
     const from = now + (step - 1) * stepMs;
@@ -316,6 +328,7 @@ export function simulateRouting(
     }
 
     // Serve the step. What an account cannot hold fails over within the step.
+    served.fill(0);
     let overflow = 0;
     accounts.forEach((_, index) => {
       if (canTake(index, from)) overflow += take(index, carry[index] * hours);
@@ -335,7 +348,10 @@ export function simulateRouting(
       while (next <= to) next += span;
       nextReset[index] = next;
     });
-    memberIndexes.forEach((index, row) => rows[row].push(usable(index, to)));
+    memberIndexes.forEach((index, row) => {
+      rows[row].push(usable(index, to));
+      takenRows[row].push(served[index]);
+    });
   }
 
   const ids = memberIndexes.map((index) => accounts[index].authId);
@@ -362,6 +378,7 @@ export function simulateRouting(
         blockEndNow(index) ?? accounts[index].projection?.reset ?? null,
       ])
     ),
+    taken: new Map(ids.map((id, row) => [id, takenRows[row]])),
   };
 }
 
@@ -401,6 +418,7 @@ export function poolOf(run: RoutingRun, authIds: Iterable<string>): PoolSimulati
     emptyAt: ids.length > 0 && firstEmpty >= 0 ? timeOf(firstEmpty) : null,
     nextRefill: refills.length > 0 ? Math.min(...refills) : null,
     breakpoints,
+    taken: new Map(ids.map((id) => [id, run.taken.get(id) ?? []])),
   };
 }
 

@@ -72,7 +72,7 @@ export const WINDOW_SPAN_MS: Record<WindowKind, number> = {
 };
 
 /** Reset headers that differ by less than this belong to the same window. */
-const RESET_TOLERANCE_MS = MINUTE_MS;
+export const RESET_TOLERANCE_MS = MINUTE_MS;
 
 export const SERIES_SLOT_COUNT = 6;
 
