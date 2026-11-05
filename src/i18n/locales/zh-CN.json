@@ -2493,6 +2493,26 @@
     "runway_marker": "runway {{duration}} ({{time}})",
     "no_5h_limit": "No 5h limit",
     "duration_hm": "{{hours}}h {{minutes}}m",
-    "duration_dh": "{{days}}d {{hours}}h"
+    "duration_dh": "{{days}}d {{hours}}h",
+    "burn_title": "Burn rate",
+    "burn_label": "Burn rate, % of pool per hour",
+    "burn_rate": "{{value}}%/h",
+    "burn_rate_day": "{{value}}%/day",
+    "burn_now": "Burning now",
+    "burn_now_detail_5h": "average of the last 30 min",
+    "burn_now_detail_7d": "average of the last 24 hours",
+    "burn_change": "Change",
+    "burn_change_faster_5h": "faster than the 30 min before",
+    "burn_change_slower_5h": "slower than the 30 min before",
+    "burn_change_same_5h": "same pace as the 30 min before",
+    "burn_change_faster_7d": "faster than the day before",
+    "burn_change_slower_7d": "slower than the day before",
+    "burn_change_same_7d": "same pace as the day before",
+    "burn_peak": "Peak",
+    "burn_peak_detail": "at {{time}}",
+    "burn_peak_none": "nothing used in this range",
+    "burn_average": "Average",
+    "burn_average_detail_5h": "over the last 5 hours",
+    "burn_average_detail_7d": "over the last 7 days"
   }
 }

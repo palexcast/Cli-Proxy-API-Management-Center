@@ -2495,6 +2495,26 @@
     "runway_marker": "tükenme {{duration}} ({{time}})",
     "no_5h_limit": "5 saatlik sınır yok",
     "duration_hm": "{{hours}}sa {{minutes}}dk",
-    "duration_dh": "{{days}}g {{hours}}sa"
+    "duration_dh": "{{days}}g {{hours}}sa",
+    "burn_title": "Tüketim hızı",
+    "burn_label": "Tüketim hızı, saatte havuzun yüzdesi",
+    "burn_rate": "%{{value}}/sa",
+    "burn_rate_day": "%{{value}}/gün",
+    "burn_now": "Şu anki tüketim",
+    "burn_now_detail_5h": "son 30 dakikanın ortalaması",
+    "burn_now_detail_7d": "son 24 saatin ortalaması",
+    "burn_change": "Değişim",
+    "burn_change_faster_5h": "önceki 30 dakikadan hızlı",
+    "burn_change_slower_5h": "önceki 30 dakikadan yavaş",
+    "burn_change_same_5h": "önceki 30 dakikayla aynı hızda",
+    "burn_change_faster_7d": "önceki günden hızlı",
+    "burn_change_slower_7d": "önceki günden yavaş",
+    "burn_change_same_7d": "önceki günle aynı hızda",
+    "burn_peak": "Zirve",
+    "burn_peak_detail": "{{time}}",
+    "burn_peak_none": "bu aralıkta kullanım yok",
+    "burn_average": "Ortalama",
+    "burn_average_detail_5h": "son 5 saatte",
+    "burn_average_detail_7d": "son 7 günde"
   }
 }

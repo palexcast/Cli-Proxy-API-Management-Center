@@ -63,6 +63,18 @@ export interface ChartData {
   splitIndex?: number;
 }
 
+/**
+ * Each series' share of the stacked chart at 100%: its weight over the total weight of the
+ * series with any data, so the stack reads as the share of the whole pool left. A series
+ * never seen takes no room. The burn line uses the same shares, so its units are the
+ * chart's y-axis.
+ */
+export function seriesShares(series: ChartSeries[]): number[] {
+  const seen = series.map((entry) => entry.values.some((value) => value != null));
+  const total = series.reduce((sum, entry, index) => (seen[index] ? sum + entry.weight : sum), 0);
+  return series.map((entry, index) => (seen[index] && total > 0 ? entry.weight / total : 0));
+}
+
 /** Last grid index strictly before `time`, or -1. */
 function indexBefore(times: number[], time: number): number {
   let found = -1;
