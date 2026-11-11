@@ -1195,6 +1195,20 @@ describe('accounts without a 5h limit', () => {
     expect(
       hasFiveHourLimit([...ultra, { t: back, authId: 'u', u5: 0.1, r5: back + 4 * HOUR_MS }])
     ).toBe(true);
+    // An idle 5h reading (utilization 0, no reset: nothing opened the window since it
+    // ended) after weekly-only responses brings the window back.
+    const idle = Date.parse('2026-11-02T12:00:00Z');
+    expect(
+      hasFiveHourLimit([...ultra, { t: idle, authId: 'u', u5: 0, u7: 0.63, r7: idle + DAY_MS }])
+    ).toBe(true);
+    // A weekly-only response after an idle reading means no 5h window.
+    expect(
+      hasFiveHourLimit([
+        ...ultra,
+        { t: idle, authId: 'u', u5: 0, u7: 0.63, r7: idle + DAY_MS },
+        { t: idle + HOUR_MS, authId: 'u', u7: 0.64, r7: idle + DAY_MS },
+      ])
+    ).toBe(false);
     // Team accounts report 5h only; no samples at all says nothing.
     expect(hasFiveHourLimit([{ t: NOW, authId: 't', u5: 0.3, r5: NOW + HOUR_MS }])).toBe(true);
     expect(hasFiveHourLimit([])).toBe(true);

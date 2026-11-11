@@ -173,7 +173,11 @@ export const capacity7d = (account: Pick<AccountInfo, 'tier'>): number =>
  * is not exhausted and no 5h one: a verified Ultra account. A weekly-only response while
  * the 5h window is open (Anthropic sometimes leaves the 5h headers out) or while the
  * weekly window is exhausted says nothing, and an account with no weekly-only response
- * keeps its 5h window. A later 5h reading brings it back.
+ * keeps its 5h window. A later 5h reading brings it back, including an idle one: a usage
+ * refresh of an account whose 5h window no request has opened since it last ended reports
+ * utilization 0 with no reset (`u5` without `r5`), which a Team seat does after a weekly
+ * block, while an account without the window reports none. A weekly-only response after
+ * an idle reading means no 5h window: there was no open window for the headers to omit.
  */
 export function hasFiveHourLimit(samples: QuotaHistorySample[]): boolean {
   let last5: QuotaHistorySample | undefined;
